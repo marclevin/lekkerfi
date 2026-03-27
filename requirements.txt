@@ -1,0 +1,8 @@
+flask
+flask-jwt-extended
+python-dotenv
+requests
+sqlalchemy
+bcrypt
+openai
+gradio_client

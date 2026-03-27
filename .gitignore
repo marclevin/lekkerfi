@@ -1,0 +1,12 @@
+.env
+claude.md
+__pycache__/
+exports/
+node_modules/
+venv/
+OpenAPI_Specs/
+playpen_data/
+.claude
+lekkerfi.db
+*.log
+plan.md
