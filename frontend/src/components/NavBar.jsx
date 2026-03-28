@@ -10,17 +10,26 @@ export default function NavBar() {
     navigate('/login')
   }
 
-  const initials = user?.email?.[0]?.toUpperCase() ?? '?'
+  const displayName = user?.full_name || user?.email || ''
+  const initials = displayName[0]?.toUpperCase() ?? '?'
 
   return (
-    <nav className="navbar">
-      <Link to="/" className="navbar-brand">LekkerFi</Link>
+    <nav className="navbar" aria-label="Top navigation">
+      <Link to="/" className="navbar-brand" aria-label="Go to home">LekkerFi</Link>
 
       {user && (
         <div className="navbar-actions">
-          <div className="user-avatar" title={user.email}>{initials}</div>
-          <span className="nav-user">{user.email}</span>
-          <button className="btn btn-ghost btn-sm" onClick={handleLogout}>Log out</button>
+          {user.role === 'supporter' && (
+            <Link to="/supporter" className="btn btn-ghost btn-sm" aria-label="Go to supporter dashboard">Dashboard</Link>
+          )}
+          <Link to="/profile" className="user-avatar" title={`${user.email} — Edit profile`} aria-label="Open profile settings">
+            {initials}
+          </Link>
+          <div className="nav-user-info">
+            <span className="nav-user">{user.full_name || user.email?.split('@')[0]}</span>
+            {user.role === 'supporter' && <span className="nav-role-badge">Supporter</span>}
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={handleLogout} aria-label="Log out of your account">Log out</button>
         </div>
       )}
     </nav>

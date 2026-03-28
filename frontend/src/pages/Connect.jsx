@@ -1,17 +1,44 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 export default function Connect() {
   const navigate = useNavigate()
+  const [calmMode, setCalmMode] = useState(() => {
+    try {
+      return localStorage.getItem('lekkerfi_calm_mode') === 'true'
+    } catch {
+      return false
+    }
+  })
+  const [showAllOptions, setShowAllOptions] = useState(false)
+
+  useEffect(() => {
+    function onStorage(e) {
+      if (e.key === 'lekkerfi_calm_mode') {
+        setCalmMode(e.newValue === 'true')
+      }
+    }
+
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  useEffect(() => {
+    if (calmMode) setShowAllOptions(false)
+  }, [calmMode])
 
   return (
     <div className="page">
       <div className="page-header">
-        <h1>Connect</h1>
-        <p>Add your financial data — via direct bank connection or by uploading a statement.</p>
+        <h1 className="page-title-with-icon">
+          <span className="page-title-icon" aria-hidden="true">🔗</span>
+          Add money data
+        </h1>
+        <p>Choose one simple way to continue.</p>
       </div>
 
       <div className="connect-cards">
-        <button className="connect-card card" onClick={() => navigate('/flow')}>
+        <button className="connect-card card" onClick={() => navigate('/flow')} aria-label="Connect your ABSA bank account">
           <div className="connect-card-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="5" width="20" height="14" rx="2" />
@@ -21,13 +48,12 @@ export default function Connect() {
           <div className="connect-card-body">
             <h2>Connect ABSA</h2>
             <p>
-              Securely link your ABSA account via SureCheck to pull live transaction data.
-              No credentials stored.
+              Link your ABSA account securely.
             </p>
             <ul className="connect-card-features">
-              <li>Live 90-day transaction history</li>
-              <li>Works with any ABSA account type</li>
-              <li>Secure consent-based access</li>
+              <li>Fast and secure</li>
+              <li>Uses ABSA approval</li>
+              <li>No banking password stored</li>
             </ul>
           </div>
           <span className="connect-card-arrow">
@@ -37,33 +63,41 @@ export default function Connect() {
           </span>
         </button>
 
-        <button className="connect-card card" onClick={() => navigate('/upload')}>
-          <div className="connect-card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="12" y1="18" x2="12" y2="12" />
-              <polyline points="9 15 12 12 15 15" />
-            </svg>
-          </div>
-          <div className="connect-card-body">
-            <h2>Upload Statement</h2>
-            <p>
-              Upload a PDF or photo of any South African bank statement for AI-powered analysis.
-            </p>
-            <ul className="connect-card-features">
-              <li>PDF, JPG, PNG, WebP supported</li>
-              <li>Works with any SA bank</li>
-              <li>Results in ~30–60 seconds</li>
-            </ul>
-          </div>
-          <span className="connect-card-arrow">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 8h10M9 4l4 4-4 4" />
-            </svg>
-          </span>
-        </button>
+        {(!calmMode || showAllOptions) && (
+          <button className="connect-card card" onClick={() => navigate('/upload')} aria-label="Upload a bank statement file">
+            <div className="connect-card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <polyline points="9 15 12 12 15 15" />
+              </svg>
+            </div>
+            <div className="connect-card-body">
+              <h2>Upload Statement</h2>
+              <p>
+                Upload a bank statement file and get a simple summary.
+              </p>
+              <ul className="connect-card-features">
+                <li>PDF or image files</li>
+                <li>Works with South African banks</li>
+                <li>Usually ready in under a minute</li>
+              </ul>
+            </div>
+            <span className="connect-card-arrow">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 8h10M9 4l4 4-4 4" />
+              </svg>
+            </span>
+          </button>
+        )}
       </div>
+
+      {calmMode && !showAllOptions && (
+        <button className="btn btn-secondary btn-full" onClick={() => setShowAllOptions(true)} aria-label="Show more add-data options">
+          Show more options
+        </button>
+      )}
     </div>
   )
 }

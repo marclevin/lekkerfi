@@ -42,6 +42,7 @@ def create_app() -> Flask:
     app.config["JWT_SECRET_KEY"] = _get_jwt_secret()
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=30)
     app.config["VIZ_CACHE"] = {}
+    app.config["AUTH_ASSIST_TICKETS"] = {}
     JWTManager(app)
 
     settings = Settings.from_env()
@@ -57,12 +58,14 @@ def create_app() -> Flask:
     from api.chat import chat_bp
     from api.insights import insights_bp
     from api.statements import statements_bp
+    from api.supporters import supporters_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(absa_bp, url_prefix="/api/absa")
     app.register_blueprint(chat_bp, url_prefix="/api/chat")
     app.register_blueprint(insights_bp, url_prefix="/api/insights")
     app.register_blueprint(statements_bp, url_prefix="/api/statements")
+    app.register_blueprint(supporters_bp, url_prefix="/api/supporters")
 
     @app.route("/api/visualizations/<path:filename>")
     def serve_visualization(filename):

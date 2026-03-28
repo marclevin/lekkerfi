@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
-import { getMe } from '../api/client'
+import { getMe, updateMe } from '../api/client'
 
 const AuthContext = createContext(null)
 
@@ -29,8 +29,14 @@ export function AuthProvider({ children }) {
     setUser(null)
   }, [])
 
+  const saveProfile = useCallback(async (patch) => {
+    const updated = await updateMe(patch)
+    setUser(updated)
+    return updated
+  }, [])
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, saveProfile }}>
       {children}
     </AuthContext.Provider>
   )

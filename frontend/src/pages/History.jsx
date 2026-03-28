@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listInsights, listStatements } from '../api/client'
+import { friendlyAccountList, readAccountTags } from '../utils/accountTags'
 
 const LANGUAGES = [
   { value: 'xhosa', label: 'isiXhosa' },
@@ -25,6 +26,7 @@ function StatusBadge({ status }) {
 
 function StatementHistory() {
   const navigate = useNavigate()
+  const accountTags = readAccountTags()
   const [statements, setStatements] = useState(null)
   const [error, setError] = useState('')
 
@@ -74,7 +76,7 @@ function StatementHistory() {
                 <span className="history-item-title">{stmt.original_filename}</span>
                 <span className="history-item-sub">{formatDate(stmt.created_at)}</span>
                 {stmt.insight?.accounts?.length > 0 && (
-                  <span className="history-item-sub">{stmt.insight.accounts.join(', ')}</span>
+                  <span className="history-item-sub">{friendlyAccountList(stmt.insight.accounts, accountTags, ', ')}</span>
                 )}
               </div>
               <div className="history-item-right">
@@ -100,6 +102,7 @@ function StatementHistory() {
 
 function AbsaHistory() {
   const navigate = useNavigate()
+  const accountTags = readAccountTags()
   const [insights, setInsights] = useState(null)
   const [error, setError] = useState('')
 
@@ -149,7 +152,7 @@ function AbsaHistory() {
                 </svg>
               </div>
               <div className="history-item-body">
-                <span className="history-item-title">{ins.accounts?.join(', ')}</span>
+                <span className="history-item-title">{friendlyAccountList(ins.accounts, accountTags, ', ')}</span>
                 <span className="history-item-sub">{formatDate(ins.created_at)}</span>
                 {ins.translations?.length > 0 && (
                   <span className="history-item-sub">

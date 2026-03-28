@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -8,6 +9,7 @@ from db.database import SessionLocal
 from db.models import AbsaSession, User
 
 absa_bp = Blueprint("absa", __name__)
+_RECENT_SURECHECK_HOURS = 48
 
 
 def _client():
@@ -36,6 +38,69 @@ def _active_session(user_id: int, db):
     )
 
 
+def _parse_surecheck_time(item: dict) -> datetime | None:
+    candidates = [
+        item.get("createdAt"),
+        item.get("createdDate"),
+        item.get("timestamp"),
+        item.get("date"),
+        item.get("timeStamp"),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        text = str(raw).strip().replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S"):
+            try:
+                return datetime.strptime(text[:19], fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _normalize_surecheck_status(raw_status: str | None) -> str:
+    status = (raw_status or "").strip().lower()
+    if status in {"accepted", "approved"}:
+        return "Accepted"
+    if status in {"unaccepted", "pending", "initiated", "awaiting"}:
+        return "Unaccepted"
+    if status in {"rejected", "declined"}:
+        return "Rejected"
+    return "Unaccepted"
+
+
+def _is_recent_surecheck(item: dict) -> bool:
+    ts = _parse_surecheck_time(item)
+    if ts is None:
+        return True
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if ts.tzinfo is not None:
+        ts = ts.replace(tzinfo=None)
+    return ts >= now - timedelta(hours=_RECENT_SURECHECK_HOURS)
+
+
+def _format_surechecks(items: list[dict], filter_recent: bool = True) -> list[dict]:
+    filtered = []
+    for item in items:
+        status = _normalize_surecheck_status(item.get("status") or item.get("sureCheckStatus"))
+        if filter_recent and not _is_recent_surecheck(item):
+            continue
+        formatted = dict(item)
+        formatted["status"] = status
+        filtered.append(formatted)
+
+    filtered.sort(
+        key=lambda i: _parse_surecheck_time(i) or datetime.min,
+        reverse=True,
+    )
+    return filtered
+
+
+
 @absa_bp.post("/session/start")
 @jwt_required()
 def start_session():
@@ -57,7 +122,14 @@ def start_session():
         if not user:
             return jsonify({"error": "User not found"}), 404
 
+        if not (user.access_account or "").strip():
+            return jsonify({
+                "error": "ABSA account number not set. Go to Settings → Personal info to add it before connecting."
+            }), 400
         token = client.get_oauth_token()
+
+        
+
 
         reference_number = f"LFI{uuid.uuid4().hex[:8].upper()}"
         consent_resp = client.create_consent(
@@ -76,36 +148,32 @@ def start_session():
                 "error": f"Consent request failed (resultCode={rc}): {consent_resp.get('resultMessage', '')}"
             }), 502
 
-        transaction_id = consent_resp.get("transactionId", "")
-
-        surecheck_resp = client.create_surecheck(
-            token=token,
-            transaction_id=transaction_id,
-            org_name=settings.org_name,
-            access_account=user.access_account,
-        )
-
         session_rec = AbsaSession(
-            user_id=user_id,
-            token=token,
-            transaction_id=transaction_id,
-            surecheck_reference=surecheck_resp.get("absaReference", ""),
-            reference_number=reference_number,
-            status="surecheck_pending",
-        )
+                user_id=user_id,
+                token=token,
+                transaction_id="",
+                surecheck_reference="",
+                reference_number=reference_number,
+                status="surecheck_pending",
+            )
         db.add(session_rec)
         db.commit()
         db.refresh(session_rec)
-
         return jsonify({
             "session_id": session_rec.id,
             "status": session_rec.status,
-            "surecheck": {
-                "sureCheckId": surecheck_resp.get("sureCheckId"),
-                "absaReference": surecheck_resp.get("absaReference"),
-                "status": surecheck_resp.get("status"),
-            },
-        }), 201
+            "already_active": False,
+            "message": "Consent created. Please accept the SureCheck in your email to continue.",
+        }), 200
+
+        # Standard flow: resultCode 200 requires SureCheck creation
+        transaction_id = consent_resp.get("transactionId", "")
+        if not transaction_id:
+            return jsonify({
+                "error": "ABSA consent did not return a transactionId — cannot proceed."
+            }), 502
+
+
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     finally:
@@ -115,7 +183,7 @@ def start_session():
 @absa_bp.get("/surechecks")
 @jwt_required()
 def list_surechecks():
-    """Lists pending SureChecks for the authenticated user's email."""
+    """Lists all SureChecks with Accepted/Unaccepted status for the authenticated user."""
     user_id = int(get_jwt_identity())
     client = _client()
 
@@ -124,15 +192,43 @@ def list_surechecks():
         user = db.get(User, user_id)
         if not user:
             return jsonify({"error": "User not found"}), 404
-        if not user.user_email:
+        if not (cast(str | None, user.user_email) or "").strip():
             return jsonify({"error": "user_email not set on this account"}), 400
 
         session_rec = _latest_session(user_id, db)
         if not session_rec:
             return jsonify({"error": "No ABSA session found. Call POST /api/absa/session/start first."}), 400
 
+        # If we already have an active session, short-circuit
+        if cast(str, session_rec.status) == "active":
+            return jsonify({
+                "ready_to_continue": True,
+                "message": "Long-lived consent is already active.",
+                "surechecks": [],
+            })
+
         items = client.list_surechecks(token=session_rec.token, user_email=user.user_email)
-        return jsonify({"surechecks": items})
+        surechecks = _format_surechecks(items, filter_recent=False)
+
+        our_ref = (cast(str | None, session_rec.surecheck_reference) or "").strip()
+
+        # Inject our pending surecheck if ABSA hasn't returned it yet
+        if our_ref:
+            known_refs = {str(sc.get("absaReference", "")).strip() for sc in surechecks}
+            if our_ref not in known_refs:
+                surechecks.insert(0, {
+                    "absaReference": our_ref,
+                    "status": "Unaccepted",
+                    "type": "Long-term",
+                    "source": "ABSA",
+                    "sentAt": session_rec.created_at.isoformat(),
+                })
+
+        return jsonify({
+            "ready_to_continue": False,
+            "message": "Accept the SureCheck below to continue.",
+            "surechecks": surechecks,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     finally:
@@ -165,18 +261,19 @@ def respond_surecheck():
             return jsonify({"error": "No ABSA session found."}), 400
 
         result = client.respond_surecheck(
-            token=session_rec.token,
+            token=cast(str, session_rec.token),
             absa_reference=absa_reference,
             action=action,
         )
 
-        session_rec.status = "active" if action == "Accepted" else "rejected"
-        session_rec.updated_at = datetime.utcnow()
+        new_status = cast(str, "active" if action == "Accepted" else "rejected")
+        session_rec.status = new_status  # type: ignore
+        session_rec.updated_at = datetime.now(timezone.utc)  # type: ignore
         db.commit()
 
         return jsonify({
             "message": f"SureCheck {action.lower()}",
-            "session_status": session_rec.status,
+            "session_status": cast(str, session_rec.status),
             "result": result,
         })
     except Exception as exc:

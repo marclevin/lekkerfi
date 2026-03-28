@@ -16,7 +16,10 @@ async function request(path, options = {}) {
   const data = await res.json().catch(() => ({}))
 
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`)
+    const err = new Error(data.error || `Request failed (${res.status})`)
+    err.status = res.status
+    err.data = data
+    throw err
   }
   return data
 }
@@ -31,8 +34,122 @@ export function login(body) {
   return request('/auth/login', { method: 'POST', body: JSON.stringify(body) })
 }
 
+export function requestLoginAssist(body) {
+  return request('/auth/login-assist/request', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function verifyLoginAssist(body) {
+  return request('/auth/login-assist/verify', { method: 'POST', body: JSON.stringify(body) })
+}
+
 export function getMe() {
   return request('/auth/me')
+}
+
+export function updateMe(body) {
+  return request('/auth/me', { method: 'PUT', body: JSON.stringify(body) })
+}
+
+export function registerUser(body) {
+  return request('/auth/register-user', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function listMyUsers() {
+  return request('/auth/my-users')
+}
+
+// ── Supporters ────────────────────────────────────────────────────────────────
+
+export function searchSupporters(q) {
+  return request(`/supporters/search?q=${encodeURIComponent(q)}`)
+}
+
+export function listMySuporters() {
+  return request('/supporters/mine')
+}
+
+export function addSupporter(body) {
+  return request('/supporters/mine', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function removeSupporter(id) {
+  return request(`/supporters/mine/${id}`, { method: 'DELETE' })
+}
+
+export function getNotifications() {
+  return request('/supporters/notifications')
+}
+
+export function sendNotification(toUserId, message) {
+  return request('/supporters/notifications', {
+    method: 'POST',
+    body: JSON.stringify({ to_user_id: toUserId, message }),
+  })
+}
+
+export function markNotificationRead(notifId) {
+  return request(`/supporters/notifications/${notifId}/read`, { method: 'PUT' })
+}
+
+export function getSupporterDashboardAlerts({ limit = 50, offset = 0, userId = null } = {}) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (userId != null) params.set('user_id', String(userId))
+  return request(`/supporters/dashboard/alerts?${params.toString()}`)
+}
+
+export function getSupporterDashboardUsers() {
+  return request('/supporters/dashboard/users')
+}
+
+export function getSupporterUserDetails(userId) {
+  return request(`/supporters/dashboard/users/${userId}/details`)
+}
+
+export function dismissSupporterAlert(alertId) {
+  return request(`/supporters/dashboard/alerts/${alertId}/dismiss`, { method: 'PUT' })
+}
+
+export function markSupporterAlertRead(alertId) {
+  return request(`/supporters/dashboard/alerts/${alertId}/read`, { method: 'PUT' })
+}
+
+export function decideSupporterAlert(alertId, decision, note = '') {
+  return request(`/supporters/dashboard/alerts/${alertId}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, note }),
+  })
+}
+
+export function setSupporterUserChatPause(userId, action, reason = '') {
+  return request(`/supporters/dashboard/users/${userId}/chat-pause`, {
+    method: 'POST',
+    body: JSON.stringify({ action, reason }),
+  })
+}
+
+export function upsertUserSpendingLimit(body) {
+  return request('/supporters/dashboard/spending-limit', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function addSupporterNote(body) {
+  return request('/supporters/dashboard/notes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function getSupporterChatMessages(userId) {
+  return request(`/supporters/chat/${userId}/messages`)
+}
+
+export function sendSupporterChatMessage(userId, message) {
+  return request(`/supporters/chat/${userId}/send`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  })
 }
 
 // ── ABSA flow ─────────────────────────────────────────────────────────────────
@@ -64,6 +181,22 @@ export function uploadStatement(file, language) {
   formData.append('file', file)
   formData.append('language', language)
   return fetch(`${BASE}/statements/upload`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+    return data
+  })
+}
+
+export function supporterUploadStatement(userId, file, language) {
+  const token = getToken()
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('language', language)
+  return fetch(`${BASE}/supporters/dashboard/users/${userId}/upload`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: formData,
@@ -106,6 +239,17 @@ export function visualizeInsight(id) {
   return request(`/insights/${id}/visualize`)
 }
 
+export function getWeeklyWin() {
+  return request('/insights/weekly-win')
+}
+
+export function getAccessibleInsight(id, language) {
+  const params = new URLSearchParams()
+  if (language) params.set('language', language)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return request(`/insights/${id}/accessible${suffix}`)
+}
+
 // ── Chat ───────────────────────────────────────────────────────────────────────
 
 export function listChatSessions() {
@@ -120,9 +264,13 @@ export function getChatMessages(sessionId) {
   return request(`/chat/sessions/${sessionId}/messages`)
 }
 
-export function sendChatMessage(sessionId, message, language) {
+export function sendChatMessage(sessionId, message, language, trustedSupporterName) {
   return request(`/chat/sessions/${sessionId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ message, language }),
+    body: JSON.stringify({
+      message,
+      language,
+      trusted_supporter_name: trustedSupporterName || undefined,
+    }),
   })
 }

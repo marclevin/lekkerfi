@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { createChatSession, getChatMessages, listChatSessions, listInsights, sendChatMessage } from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import { friendlyAccountList, readAccountTags } from '../utils/accountTags'
 
 const LANGUAGES = [
   { value: 'xhosa',     label: 'isiXhosa' },
@@ -56,18 +59,38 @@ function ThinkingIndicator() {
 // ── Main Chat page ─────────────────────────────────────────────────────────────
 
 export default function Chat() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const accountTags = readAccountTags()
+  const { user } = useAuth()
   const [sessionId, setSessionId] = useState(null)
   const [messages, setMessages] = useState([])
-  const [language, setLanguage] = useState('english')
+  const [language, setLanguage] = useState(() => {
+    try {
+      const saved = localStorage.getItem('lekkerfi_chat_lang')
+      if (saved) return saved
+    } catch {}
+    return 'english'
+  })
+
+  // Apply profile preferred_language once user loads, if no explicit chat choice is saved
+  useEffect(() => {
+    if (!user?.preferred_language) return
+    try {
+      if (!localStorage.getItem('lekkerfi_chat_lang')) setLanguage(user.preferred_language)
+    } catch {}
+  }, [user?.preferred_language])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [hasFinancialContext, setHasFinancialContext] = useState(true)
-
+  const [chatPaused, setChatPaused] = useState(false)
+  const [pauseReason, setPauseReason] = useState('')
   // Insight selection
   const [insights, setInsights] = useState([])
   const [selectedInsightId, setSelectedInsightId] = useState(null)
+  const [pendingLaunch, setPendingLaunch] = useState(null)
 
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
@@ -83,6 +106,16 @@ export default function Chat() {
       .catch(() => {})
   }, [])
 
+  // Parse deep-link requests from Insights page (insightId + prefill)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const prefill = (params.get('prefill') || '').trim()
+    const rawInsightId = params.get('insightId')
+    const insightId = rawInsightId ? Number(rawInsightId) : null
+    if (!prefill && !insightId) return
+    setPendingLaunch({ prefill, insightId })
+  }, [location.search])
+
   // On mount: load or create a session (using the latest insight)
   useEffect(() => {
     async function init() {
@@ -93,12 +126,16 @@ export default function Chat() {
         if (sessions.length > 0) {
           const latest = sessions[0]
           setSessionId(latest.id)
+          setChatPaused(Boolean(latest.is_paused))
+          setPauseReason(latest.paused_reason || '')
           if (latest.insight_id) setSelectedInsightId(latest.insight_id)
           const { messages: msgs } = await getChatMessages(latest.id)
           setMessages(msgs)
         } else {
           const { session } = await createChatSession()
           setSessionId(session.id)
+          setChatPaused(Boolean(session.is_paused))
+          setPauseReason(session.paused_reason || '')
           if (session.insight_id) setSelectedInsightId(session.insight_id)
           setMessages([])
         }
@@ -116,6 +153,38 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, sending])
 
+  // Apply deep-link once session and insights are available
+  useEffect(() => {
+    if (!pendingLaunch || loading || insights.length === 0) return
+
+    let cancelled = false
+
+    async function applyLaunch() {
+      const targetInsight = pendingLaunch.insightId && insights.some((i) => i.id === pendingLaunch.insightId)
+        ? pendingLaunch.insightId
+        : selectedInsightId || insights[0]?.id || null
+
+      if (targetInsight && targetInsight !== selectedInsightId) {
+        await handleNewChat(targetInsight)
+        if (cancelled) return
+        setSelectedInsightId(targetInsight)
+      }
+
+      if (pendingLaunch.prefill) {
+        setInput(pendingLaunch.prefill)
+      }
+
+      setPendingLaunch(null)
+      navigate('/chat', { replace: true })
+      inputRef.current?.focus()
+    }
+
+    applyLaunch()
+    return () => {
+      cancelled = true
+    }
+  }, [pendingLaunch, loading, insights, selectedInsightId])
+
   async function handleNewChat(insightId) {
     setLoading(true)
     setError('')
@@ -123,6 +192,8 @@ export default function Chat() {
       const body = insightId ? { insight_id: insightId } : {}
       const { session } = await createChatSession(body)
       setSessionId(session.id)
+      setChatPaused(Boolean(session.is_paused))
+      setPauseReason(session.paused_reason || '')
       if (session.insight_id) setSelectedInsightId(session.insight_id)
       setMessages([])
     } catch (err) {
@@ -156,14 +227,21 @@ export default function Chat() {
     setMessages((prev) => [...prev, optimistic])
 
     try {
-      const data = await sendChatMessage(sessionId, text, language)
+      const supporterName = user?.trusted_supporter_name || null
+      const data = await sendChatMessage(sessionId, text, language, supporterName)
       setHasFinancialContext(data.has_financial_context)
+      setChatPaused(Boolean(data.chat_paused))
+      setPauseReason(data.pause_reason || '')
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== optimistic.id),
         data.user_message,
         data.assistant_message,
       ])
     } catch (err) {
+      if (err?.status === 423) {
+        setChatPaused(true)
+        setPauseReason(err?.data?.pause_reason || '')
+      }
       setError(err.message)
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
     } finally {
@@ -192,56 +270,21 @@ export default function Chat() {
             </svg>
           </div>
           <div className="chat-header-text">
-            <h1 className="chat-header-title">Chat with your finances</h1>
+            <h1 className="chat-header-title">Ask about your money</h1>
             {!loading && !hasFinancialContext && (
-              <p className="chat-header-sub chat-header-sub-warn">No financial data — upload a statement first.</p>
+              <p className="chat-header-sub chat-header-sub-warn">No money data yet. Upload a statement first.</p>
             )}
             {!loading && hasFinancialContext && selectedInsight && (
               <p className="chat-header-sub">
-                {selectedInsight.accounts?.join(', ')} · {formatDate(selectedInsight.created_at)}
+                {friendlyAccountList(selectedInsight.accounts, accountTags, ', ')} · {formatDate(selectedInsight.created_at)}
               </p>
             )}
           </div>
         </div>
-
-        <div className="chat-header-actions">
-          {/* Insight picker */}
-          {insights.length > 0 && (
-            <select
-              className="chat-lang-select"
-              value={selectedInsightId ?? ''}
-              onChange={(e) => handleInsightChange(e.target.value || null)}
-              title="Choose snapshot to chat about"
-              disabled={loading}
-            >
-              {insights.map((ins) => (
-                <option key={ins.id} value={ins.id}>
-                  {ins.accounts?.join(', ') || 'Unnamed'} · {formatDate(ins.created_at)}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {/* Language picker */}
-          <select
-            className="chat-lang-select"
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            title="Reply language"
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>{l.label}</option>
-            ))}
-          </select>
-
-          <button className="btn btn-ghost btn-sm" onClick={() => handleNewChat(selectedInsightId)} disabled={loading}>
-            New chat
-          </button>
-        </div>
       </div>
 
       {/* ── Messages ── */}
-      <div className="chat-messages">
+      <div className="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
         {loading && (
           <div className="page-center" style={{ minHeight: 120 }}>
             <div className="spinner" />
@@ -287,9 +330,66 @@ export default function Chat() {
       {/* ── Error ── */}
       {error && (
         <div className="chat-error">
-          <div className="alert alert-error">{error}</div>
+          <div className="alert alert-error" role="alert">{error}</div>
         </div>
       )}
+
+      {chatPaused && (
+        <div className="chat-error">
+          <div className="alert alert-error" role="alert">
+            Chat is paused while your Trusted Supporter reviews this spending request.
+            {pauseReason ? ` (${pauseReason.replace(/_/g, ' ')})` : ''}
+          </div>
+        </div>
+      )}
+
+      {/* ── Controls bar ── */}
+      <div className="chat-controls-bar" role="group" aria-label="Chat controls">
+        {insights.length > 0 && (
+          <div className="chat-ctrl-field">
+            <label className="chat-ctrl-label" htmlFor="chat-insight-select">Summary</label>
+            <select
+              id="chat-insight-select"
+              className="chat-ctrl-select"
+              value={selectedInsightId ?? ''}
+              onChange={(e) => handleInsightChange(e.target.value || null)}
+              aria-label="Choose which summary to chat about"
+              disabled={loading}
+            >
+              {insights.map((ins) => (
+                <option key={ins.id} value={ins.id}>
+                  {friendlyAccountList(ins.accounts, accountTags, ', ') || 'Unnamed'} · {formatDate(ins.created_at)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div className="chat-ctrl-field">
+          <label className="chat-ctrl-label" htmlFor="chat-language-select">Language</label>
+          <select
+            id="chat-language-select"
+            className="chat-ctrl-select"
+            value={language}
+            onChange={(e) => {
+              setLanguage(e.target.value)
+              try { localStorage.setItem('lekkerfi_chat_lang', e.target.value) } catch {}
+            }}
+            aria-label="Choose chat language"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.value} value={l.value}>{l.label}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          className="btn btn-ghost btn-sm chat-ctrl-new"
+          onClick={() => handleNewChat(selectedInsightId)}
+          disabled={loading}
+          aria-label="Start a new chat"
+        >
+          + New
+        </button>
+      </div>
 
       {/* ── Input ── */}
       <div className="chat-input-bar">
@@ -297,16 +397,17 @@ export default function Chat() {
           ref={inputRef}
           className="chat-input"
           rows={1}
-          placeholder="Ask about your spending, savings, or finances…"
+          placeholder="Type your question here"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={sending || loading || !sessionId}
+          disabled={sending || loading || !sessionId || chatPaused}
+          aria-label="Type your chat message"
         />
         <button
           className="chat-send-btn"
           onClick={handleSend}
-          disabled={!input.trim() || sending || loading || !sessionId}
+          disabled={!input.trim() || sending || loading || !sessionId || chatPaused}
           aria-label="Send message"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

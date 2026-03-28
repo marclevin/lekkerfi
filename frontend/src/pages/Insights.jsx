@@ -1,5 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
-import { getInsight, listInsights, translateInsight, visualizeInsight } from '../api/client'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  getAccessibleInsight,
+  getInsight,
+  listInsights,
+} from '../api/client'
+import { useAuth } from '../context/AuthContext'
 
 const LANGUAGES = [
   { value: 'xhosa', label: 'isiXhosa' },
@@ -9,16 +15,19 @@ const LANGUAGES = [
   { value: 'english', label: 'English' },
 ]
 
-const CHART_PRIORITY = ['spending_overview', 'balance_progression', 'daily_trend', 'category_breakdown']
-
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-ZA', {
     day: 'numeric',
-    month: 'short',
+    month: 'long',
     year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
   })
+}
+
+function clampIndex(index, max) {
+  if (max <= 0) return 0
+  if (index < 0) return 0
+  if (index > max - 1) return max - 1
+  return index
 }
 
 function fmt(value) {
@@ -26,84 +35,118 @@ function fmt(value) {
   return `R ${Number(value).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-// ── Chart zoom modal ───────────────────────────────────────────────────────────
+function firstSentence(text) {
+  if (!text) return ''
+  const clean = String(text).replace(/\s+/g, ' ').trim()
+  const idx = clean.search(/[.!?]/)
+  return idx === -1 ? clean : clean.slice(0, idx + 1)
+}
 
-function ChartModal({ viz, onClose }) {
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+function getCardIcon(title = '') {
+  const t = title.toLowerCase()
+  if (t.includes('income') || t.includes('earning') || t.includes('salary')) return '💵'
+  if (t.includes('expense') || t.includes('spending') || t.includes('spend')) return '🛒'
+  if (t.includes('saving') || t.includes('save')) return '🏦'
+  if (t.includes('balance')) return '💰'
+  if (t.includes('food') || t.includes('grocer')) return '🍳'
+  if (t.includes('transport') || t.includes('travel') || t.includes('fuel') || t.includes('petrol')) return '🚗'
+  if (t.includes('housing') || t.includes('rent') || t.includes('home')) return '🏠'
+  if (t.includes('entertain') || t.includes('leisure') || t.includes('fun')) return '🎬'
+  if (t.includes('debt') || t.includes('loan') || t.includes('credit')) return '📋'
+  if (t.includes('flow') || t.includes('net')) return '📊'
+  if (t.includes('tip') || t.includes('advice') || t.includes('step')) return '💡'
+  if (t.includes('health') || t.includes('medical')) return '❤️'
+  if (t.includes('subscription') || t.includes('recurring')) return '🔄'
+  return '📋'
+}
 
+// ── Stat card ─────────────────────────────────────────────────────────────────
+
+function StatCard({ amount, name, desc, type }) {
   return (
-    <div className="chart-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label={viz.title}>
-      <div className="chart-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="chart-modal-top">
-          <div className="chart-modal-info">
-            <h3>{viz.title}</h3>
-            <p>{viz.description}</p>
-          </div>
-          <button className="chart-modal-close" onClick={onClose} aria-label="Close">✕</button>
-        </div>
-        <div className="chart-modal-body">
-          <img src={viz.url} alt={viz.title} className="chart-modal-img" />
-        </div>
-      </div>
+    <div className={`stat-card${type ? ` stat-card-${type}` : ''}`}>
+      <span className="stat-card-amount">{amount}</span>
+      <span className="stat-card-name">{name}</span>
+      <span className="stat-card-desc">{desc}</span>
     </div>
   )
 }
 
 // ── Insight detail ─────────────────────────────────────────────────────────────
 
-function InsightDetail({ id, onClose }) {
+function InsightDetail({ id, preferredLanguage }) {
+  const navigate = useNavigate()
   const [insight, setInsight] = useState(null)
-  const [activeTab, setActiveTab] = useState('simplified')
-  const [newLang, setNewLang] = useState('zulu')
-  const [translating, setTranslating] = useState(false)
   const [error, setError] = useState('')
+  const [language, setLanguage] = useState(preferredLanguage || 'english')
+  const [guided, setGuided] = useState(null)
+  const [guidedLoading, setGuidedLoading] = useState(true)
+  const [activeCard, setActiveCard] = useState(0)
+  const [readingCard, setReadingCard] = useState(false)
 
-  const [viz, setViz] = useState(null)
-  const [vizLoading, setVizLoading] = useState(true)
-  const [colorblind, setColorblind] = useState(false)
-  const [zoomedChart, setZoomedChart] = useState(null)
-
-  const handleZoom = useCallback((c) => setZoomedChart(c), [])
-  const handleCloseZoom = useCallback(() => setZoomedChart(null), [])
+  const summary = guided?.summary
+  const cards = guided?.cards || []
+  const card = cards[clampIndex(activeCard, cards.length)]
 
   useEffect(() => {
+    setError('')
     getInsight(id).then(setInsight).catch((e) => setError(e.message))
   }, [id])
 
   useEffect(() => {
-    setVizLoading(true)
-    visualizeInsight(id)
-      .then(setViz)
-      .catch(() => {}) // charts are non-critical
-      .finally(() => setVizLoading(false))
-  }, [id])
-
-  async function handleTranslate() {
+    setGuidedLoading(true)
     setError('')
-    setTranslating(true)
-    try {
-      const t = await translateInsight(id, newLang)
-      setInsight((prev) => ({
-        ...prev,
-        translations: [...(prev.translations || []), t],
-      }))
-      setActiveTab(t.language)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setTranslating(false)
+    getAccessibleInsight(id, language)
+      .then((data) => {
+        setGuided(data)
+        setActiveCard(0)
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setGuidedLoading(false))
+  }, [id, language])
+
+  useEffect(() => {
+    setLanguage(preferredLanguage || 'english')
+  }, [preferredLanguage])
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      const tag = document.activeElement?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'ArrowRight') setActiveCard((prev) => clampIndex(prev + 1, cards.length))
+      if (e.key === 'ArrowLeft') setActiveCard((prev) => clampIndex(prev - 1, cards.length))
     }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [guided])
+
+  useEffect(() => {
+    if (!readingCard || !('speechSynthesis' in window) || !card) return
+    window.speechSynthesis.cancel()
+    const text = `${card.title}. ${card.headline}. ${card.explanation}. What to do: ${card.what_to_do_now}`
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 0.88
+    utterance.pitch = 1
+    utterance.onend = () => setReadingCard(false)
+    utterance.onerror = () => setReadingCard(false)
+    window.speechSynthesis.speak(utterance)
+    return () => { window.speechSynthesis.cancel() }
+  }, [readingCard, activeCard, guided])
+
+  useEffect(() => {
+    setActiveCard((prev) => clampIndex(prev, cards.length))
+  }, [cards.length])
+
+  function handleAskInChat(c) {
+    const prompt = c?.chat_prompt
+      || (c ? `Help me understand "${c.title}" in simple words. ${firstSentence(c.headline)}` : 'Please explain my money summary in simple steps.')
+    navigate(`/chat?${new URLSearchParams({ insightId: String(id), prefill: prompt }).toString()}`)
   }
 
   if (error && !insight) {
     return (
       <div className="insight-detail">
-        <div className="alert alert-error">{error}</div>
-        <button className="btn btn-ghost" onClick={onClose}>← Back</button>
+        <div className="alert alert-error" role="alert">{error}</div>
       </div>
     )
   }
@@ -116,153 +159,160 @@ function InsightDetail({ id, onClose }) {
     )
   }
 
-  const currentTranslation = insight.translations?.find((t) => t.language === activeTab)
-  const summary = viz?.summary
-  const charts = viz?.visualizations
-    ? [...viz.visualizations].sort((a, b) => CHART_PRIORITY.indexOf(a.type) - CHART_PRIORITY.indexOf(b.type))
-    : []
-
   return (
     <div className="insight-detail">
-      <button className="btn btn-ghost back-btn" onClick={onClose}>
-        ← Back to insights
-      </button>
-
-      <div className="insight-meta">
-        <span>{formatDate(insight.created_at)}</span>
-        <span>Accounts: {insight.accounts?.join(', ')}</span>
+      {/* ── Header row ── */}
+      <div className="insight-detail-header">
+        <p className="insight-detail-date">📅 {formatDate(insight.created_at)}</p>
+        <div className="insight-access-row">
+          <label className="insight-lang">
+            <span>Language</span>
+            <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+              {LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>{l.label}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setReadingCard((prev) => !prev)}
+            aria-pressed={readingCard}
+            disabled={!card}
+          >
+            {readingCard ? '🔇 Stop' : '🔊 Read aloud'}
+          </button>
+        </div>
       </div>
-
-      {error && <div className="alert alert-error">{error}</div>}
 
       {/* ── Key stats ── */}
       {summary && (
-        <div className="snap-stats-row" style={{ marginBottom: '1.25rem' }}>
-          <div className="snap-stat">
-            <span className="snap-stat-label">Income</span>
-            <span className="snap-stat-value positive">↑ {fmt(summary.total_income)}</span>
-          </div>
-          <div className="snap-stat">
-            <span className="snap-stat-label">Expenses</span>
-            <span className="snap-stat-value negative">↓ {fmt(summary.total_expenses)}</span>
-          </div>
-          <div className="snap-stat">
-            <span className="snap-stat-label">Net Flow</span>
-            <span className={`snap-stat-value${summary.net_flow >= 0 ? ' positive' : ' negative'}`}>
-              {fmt(summary.net_flow)}
-            </span>
-          </div>
-          <div className="snap-stat">
-            <span className="snap-stat-label">Balance</span>
-            <span className="snap-stat-value">{fmt(summary.account_balance)}</span>
-          </div>
+        <div className="stat-cards-grid" style={{ marginBottom: '0.5rem' }}>
+          <StatCard
+            amount={fmt(summary.total_income)}
+            name="Money in"
+            desc="Came into your account"
+            type="positive"
+          />
+          <StatCard
+            amount={fmt(summary.total_expenses)}
+            name="Money out"
+            desc="What you spent"
+            type="negative"
+          />
+          <StatCard
+            amount={fmt(summary.net_flow)}
+            name="Left over"
+            desc={summary.net_flow >= 0 ? 'More in than out — well done' : 'More went out than came in'}
+            type={summary.net_flow >= 0 ? 'positive' : 'negative'}
+          />
+          <StatCard
+            amount={fmt(summary.account_balance)}
+            name="Balance now"
+            desc="Your account right now"
+            type=""
+          />
         </div>
       )}
 
-      {/* ── Charts ── */}
-      {vizLoading && (
+      {error && <div className="alert alert-error" role="alert">{error}</div>}
+
+      {/* ── Guided cards ── */}
+      {guidedLoading && (
         <div className="page-center" style={{ minHeight: 80 }}>
           <div className="spinner" />
         </div>
       )}
 
-      {!vizLoading && charts.length > 0 && (
+      {!guidedLoading && !!card && (
         <>
-          <div className="snapshot-charts-bar">
-            <span className="snapshot-charts-label">Charts</span>
-            <label className="cb-toggle-row" title="Grayscale for colour-blind viewing">
-              <span className="cb-toggle-label">Grayscale</span>
-              <span className="toggle-switch">
-                <input type="checkbox" checked={colorblind} onChange={(e) => setColorblind(e.target.checked)} />
-                <span className="toggle-slider" />
-              </span>
-            </label>
-          </div>
-
-          <div className="chart-grid">
-            {charts.map((c) => (
-              <div
-                key={c.type}
-                className="chart-card card"
-                onClick={() => handleZoom(c)}
-                role="button"
-                tabIndex={0}
-                aria-label={`Expand: ${c.title}`}
-                onKeyDown={(e) => e.key === 'Enter' && handleZoom(c)}
-              >
-                <div className="chart-header">
-                  <span className="chart-title">{c.title}</span>
-                  <span className="chart-desc">{c.description}</span>
-                </div>
-                <img
-                  src={c.url}
-                  alt={c.title}
-                  className={`chart-img${colorblind ? ' colorblind' : ''}`}
-                  loading="lazy"
-                />
-                <p className="chart-zoom-hint">Tap to expand</p>
-              </div>
+          {/* Progress dots */}
+          <div className="guided-progress" role="tablist" aria-label="Insight cards">
+            {cards.map((_, idx) => (
+              <button
+                key={idx}
+                type="button"
+                role="tab"
+                className={`guided-progress-dot${idx === activeCard ? ' active' : idx < activeCard ? ' done' : ''}`}
+                onClick={() => setActiveCard(idx)}
+                aria-selected={idx === activeCard}
+                aria-label={`Card ${idx + 1}${idx < activeCard ? ' (done)' : ''}`}
+              />
             ))}
           </div>
+
+          {/* Card */}
+          <article className="guided-card card" aria-label={`Insight card ${activeCard + 1} of ${cards.length}`}>
+            <div className="guided-card-icon-row">
+              <span className="guided-card-icon" aria-hidden="true">{getCardIcon(card.title)}</span>
+              <div className="guided-card-meta">
+                <p className="guided-card-step">{activeCard + 1} of {cards.length}</p>
+                <h3 className="guided-card-title">{card.title}</h3>
+              </div>
+            </div>
+
+            <p className="guided-headline">{firstSentence(card.headline)}</p>
+            <p className="guided-explanation">{firstSentence(card.explanation)}</p>
+
+            {card.what_to_do_now && (
+              <div className="guided-next-step">
+                <span className="guided-next-icon" aria-hidden="true">👉</span>
+                <div>
+                  <p className="guided-next-label">What to do</p>
+                  <p className="guided-next-text">{card.what_to_do_now}</p>
+                </div>
+              </div>
+            )}
+
+            <div className="guided-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setActiveCard((prev) => clampIndex(prev - 1, cards.length))}
+                disabled={activeCard === 0}
+                aria-label="Previous card"
+              >
+                ← Back
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => handleAskInChat(card)}
+                aria-label="Ask chat about this card"
+              >
+                💬 Ask chat
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setActiveCard((prev) => clampIndex(prev + 1, cards.length))}
+                disabled={activeCard >= cards.length - 1}
+                aria-label="Next card"
+              >
+                Next →
+              </button>
+            </div>
+          </article>
         </>
       )}
 
-      {/* ── Text summary tabs ── */}
-      <div className="tab-bar" style={{ marginTop: '1.5rem' }}>
-        <button
-          className={`tab ${activeTab === 'simplified' ? 'active' : ''}`}
-          onClick={() => setActiveTab('simplified')}
-        >
-          Summary (English)
-        </button>
-        {insight.translations?.map((t) => (
-          <button
-            key={t.language}
-            className={`tab ${activeTab === t.language ? 'active' : ''}`}
-            onClick={() => setActiveTab(t.language)}
-          >
-            {LANGUAGES.find((l) => l.value === t.language)?.label || t.language}
-          </button>
-        ))}
-      </div>
-
-      <div className="insight-bullets">
-        {activeTab === 'simplified'
-          ? insight.simplified?.split('\n').map((line, i) => <p key={i}>{line}</p>)
-          : currentTranslation?.translated?.split('\n').map((line, i) => <p key={i}>{line}</p>)}
-      </div>
-
-      {/* ── Translate ── */}
-      <div className="translate-section">
-        <h4>Add translation</h4>
-        <div className="translate-row">
-          <select value={newLang} onChange={(e) => setNewLang(e.target.value)}>
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-          <button
-            className="btn btn-secondary"
-            onClick={handleTranslate}
-            disabled={translating}
-          >
-            {translating ? 'Translating…' : 'Translate'}
+      {cards.length === 0 && !guidedLoading && (
+        <div className="card empty-state">
+          <p>We could not build guided cards right now.</p>
+          <button type="button" className="btn btn-secondary" onClick={() => handleAskInChat(null)}>
+            💬 Ask in chat instead
           </button>
         </div>
-      </div>
-
-      {zoomedChart && <ChartModal viz={zoomedChart} onClose={handleCloseZoom} />}
+      )}
     </div>
   )
 }
 
-// ── Insights list ──────────────────────────────────────────────────────────────
+// ── Insights page ──────────────────────────────────────────────────────────────
 
 export default function Insights() {
+  const { user } = useAuth()
   const [insights, setInsights] = useState(null)
-  const [selectedId, setSelectedId] = useState(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -271,59 +321,55 @@ export default function Insights() {
       .catch((e) => setError(e.message))
   }, [])
 
-  if (selectedId) {
+  if (!insights && !error) {
     return (
       <div className="page">
-        <div className="card">
-          <InsightDetail id={selectedId} onClose={() => setSelectedId(null)} />
+        <div className="page-center" style={{ minHeight: 160 }}>
+          <span className="spinner" />
         </div>
       </div>
     )
   }
 
+  if (error) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <h1>Your Insights</h1>
+        </div>
+        <div className="alert alert-error" role="alert">{error}</div>
+      </div>
+    )
+  }
+
+  if (insights.length === 0) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <h1>Your Insights</h1>
+          <p>Connect your bank or upload a statement to get your first insight.</p>
+        </div>
+        <div className="card empty-state">
+          <p style={{ fontSize: '2rem', marginBottom: '8px' }}>📊</p>
+          <p>No insights yet.</p>
+          <p>Go to <a href="/flow">Connect &amp; Flow</a> to generate your first analysis.</p>
+        </div>
+      </div>
+    )
+  }
+
+  const latest = insights[0]
+
   return (
     <div className="page">
       <div className="page-header">
         <h1>Your Insights</h1>
-        <p>Past financial analyses</p>
+        <p>One step at a time — your latest money summary below.</p>
       </div>
-
-      {error && <div className="alert alert-error">{error}</div>}
-
-      {!insights && !error && (
-        <div className="page-center">
-          <span className="spinner" />
-        </div>
-      )}
-
-      {insights?.length === 0 && (
-        <div className="card empty-state">
-          <p>No insights yet.</p>
-          <p>Go to the <a href="/flow">Flow</a> page to generate your first analysis.</p>
-        </div>
-      )}
-
-      <div className="insights-grid">
-        {insights?.map((ins) => (
-          <div key={ins.id} className="card insight-card" onClick={() => setSelectedId(ins.id)}>
-            <div className="insight-card-header">
-              <span className="insight-date">{formatDate(ins.created_at)}</span>
-              <span className="insight-accounts">{ins.accounts?.join(' · ')}</span>
-            </div>
-            <div className="insight-preview">
-              {ins.simplified?.split('\n').slice(0, 3).map((line, i) => (
-                <p key={i} className="insight-preview-line">{line}</p>
-              ))}
-            </div>
-            <div className="insight-card-footer">
-              <span className="translation-count">
-                {ins.translations?.length || 0} translation{ins.translations?.length !== 1 ? 's' : ''}
-              </span>
-              <span className="view-link">View charts & summary →</span>
-            </div>
-          </div>
-        ))}
-      </div>
+      <InsightDetail
+        id={latest.id}
+        preferredLanguage={user?.preferred_language || 'english'}
+      />
     </div>
   )
 }

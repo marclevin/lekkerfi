@@ -1,17 +1,85 @@
 import json
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
+from typing import cast
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from db.database import SessionLocal
-from db.models import Insight, Translation
+from db.models import Insight, Translation, User
+from services.accessible_insights import generate_accessible_carousel
 from services.combine import combine_transactions
 from services.insights_visualizer import FinancialInsightsVisualizer
 from services.simplify import simplify
 from services.translate import translate
 
 insights_bp = Blueprint("insights", __name__)
+
+
+def _to_decimal(value) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    try:
+        return Decimal(str(value).replace("R", "").replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def _fmt_money(value: Decimal) -> str:
+    return f"R{value:,.2f}"
+
+
+def _weekly_win_payload(raw_transactions: str | None) -> dict:
+    if not raw_transactions:
+        return {
+            "wins": ["We linked your profile and we are ready for the next money check-in."],
+            "share_text": "Weekly Win: We are ready to track our spending together this week.",
+        }
+
+    combined = json.loads(raw_transactions)
+    accounts = combined.get("accounts", []) if isinstance(combined, dict) else []
+
+    spend = Decimal("0")
+    income = Decimal("0")
+    fee_total = Decimal("0")
+    tx_count = 0
+    low_fee_days = 0
+
+    for acc in accounts:
+        for trx in acc.get("transactions", []):
+            tx_count += 1
+            amount = _to_decimal(trx.get("amount"))
+            fee = _to_decimal(trx.get("fee"))
+            if amount < 0:
+                spend += abs(amount)
+            elif amount > 0:
+                income += amount
+            fee_total += abs(fee)
+            if abs(fee) <= Decimal("5"):
+                low_fee_days += 1
+
+    net = income - spend
+    wins: list[str] = []
+    if net >= 0:
+        wins.append(f"We kept a positive money flow of {_fmt_money(net)} in this period.")
+    else:
+        wins.append("We tracked where money is going, so we can make a stronger plan next week.")
+
+    if spend > 0:
+        wins.append(f"We reviewed {_fmt_money(spend)} of spending, which helps us plan with confidence.")
+
+    if fee_total > 0:
+        wins.append(f"We kept total bank fees to {_fmt_money(fee_total)} and can aim to lower that next week.")
+
+    if tx_count > 0 and low_fee_days / tx_count >= 0.7:
+        wins.append("Most of our transactions had very low fees, which is a great habit.")
+
+    if not wins:
+        wins.append("We stayed engaged with our money this week, and that is a real win.")
+
+    share_text = "Weekly Win:\n- " + "\n- ".join(wins[:3])
+    return {"wins": wins[:4], "share_text": share_text}
 
 
 @insights_bp.post("/generate")
@@ -132,6 +200,31 @@ def list_insights():
         db.close()
 
 
+@insights_bp.get("/weekly-win")
+@jwt_required()
+def weekly_win():
+    """Returns a positive weekly summary and copy-ready text snippet."""
+    user_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        insight = (
+            db.query(Insight)
+            .filter_by(user_id=user_id)
+            .order_by(Insight.created_at.desc())
+            .first()
+        )
+        user = db.get(User, user_id)
+        payload = _weekly_win_payload(insight.raw_transactions if insight else None)
+        payload["supporter_name"] = (user.trusted_supporter_name if user else None) or "Trusted Supporter"
+        payload["insight_id"] = insight.id if insight else None
+        payload["generated_at"] = date.today().isoformat()
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+
 @insights_bp.get("/<int:insight_id>")
 @jwt_required()
 def get_insight(insight_id: int):
@@ -234,6 +327,27 @@ def _combined_to_viz_format(combined: dict) -> dict:
     }
 
 
+def _build_visualization_result(insight_id: int, insight: Insight) -> dict:
+    """Build or retrieve visualization payload for an insight from process cache."""
+    viz_cache: dict = current_app.config.get("VIZ_CACHE", {})
+    if insight_id in viz_cache:
+        return viz_cache[insight_id]
+
+    raw = cast(str | None, insight.raw_transactions)
+    combined = json.loads(raw or "{}")
+    viz_input = _combined_to_viz_format(combined)
+
+    visualizer = FinancialInsightsVisualizer()
+    result = visualizer.generate_all_insights(viz_input)
+
+    for viz in result.get("visualizations", []):
+        viz["url"] = f"/api/visualizations/{viz['filename']}"
+
+    viz_cache[insight_id] = result
+    current_app.config["VIZ_CACHE"] = viz_cache
+    return result
+
+
 @insights_bp.post("/<int:insight_id>/translate")
 @jwt_required()
 def translate_insight(insight_id: int):
@@ -273,6 +387,50 @@ def translate_insight(insight_id: int):
         }), 201
     except Exception as exc:
         db.rollback()
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+
+@insights_bp.get("/<int:insight_id>/accessible")
+@jwt_required()
+def accessible_insight_cards(insight_id: int):
+    """
+    Returns accessibility-first guided cards tied to each insight chart.
+
+    Query params:
+    - language: optional target language (defaults to user preferred_language or english)
+    """
+    user_id = int(get_jwt_identity())
+    requested_language = (request.args.get("language") or "").strip().lower()
+
+    db = SessionLocal()
+    try:
+        insight = db.get(Insight, insight_id)
+        if not insight or insight.user_id != user_id:
+            return jsonify({"error": "Insight not found"}), 404
+
+        user = db.get(User, user_id)
+        preferred_language = cast(str | None, user.preferred_language) if user else None
+        language = requested_language or (preferred_language or "english")
+
+        viz_result = _build_visualization_result(insight_id=insight_id, insight=insight)
+        cards = generate_accessible_carousel(
+            simplified_text=cast(str | None, insight.simplified_text) or "",
+            visualizations=viz_result.get("visualizations", []),
+            summary=viz_result.get("summary", {}),
+            language=str(language),
+        )
+
+        return jsonify({
+            "insight_id": insight.id,
+            "language": cards.get("language", language),
+            "intro": cards.get("intro", ""),
+            "cards": cards.get("cards", []),
+            "summary": viz_result.get("summary", {}),
+            "created_at": insight.created_at.isoformat(),
+        })
+    except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     finally:
         db.close()

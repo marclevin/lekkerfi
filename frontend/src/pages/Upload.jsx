@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { uploadStatement } from '../api/client'
 
@@ -69,6 +69,29 @@ export default function Upload() {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+  const [calmMode, setCalmMode] = useState(() => {
+    try {
+      return localStorage.getItem('lekkerfi_calm_mode') === 'true'
+    } catch {
+      return false
+    }
+  })
+  const [showAllOptions, setShowAllOptions] = useState(false)
+
+  useEffect(() => {
+    function onStorage(e) {
+      if (e.key === 'lekkerfi_calm_mode') {
+        setCalmMode(e.newValue === 'true')
+      }
+    }
+
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  useEffect(() => {
+    if (calmMode) setShowAllOptions(false)
+  }, [calmMode])
 
   function handleFileChange(e) {
     const picked = e.target.files?.[0]
@@ -105,8 +128,11 @@ export default function Upload() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1>Upload Bank Statement</h1>
-        <p>Upload a PDF or photo of your bank statement to get AI-powered financial insights.</p>
+        <h1 className="page-title-with-icon">
+          <span className="page-title-icon" aria-hidden="true">📄</span>
+          Upload bank statement
+        </h1>
+        <p>Upload one statement to get a clear money summary.</p>
       </div>
 
       <div className="card flow-card">
@@ -116,23 +142,24 @@ export default function Upload() {
           <div className="step-content">
             <h2>Select Statement</h2>
 
-            <div className="callout callout-info">
-              <span className="callout-icon">📎</span>
-              <div className="callout-body">
-                <strong>Supported formats:</strong> PDF, JPG, PNG, WebP.
-                <p>Processing uses AI vision and typically takes <strong>30–60 seconds</strong>. Works with statements from any South African bank.</p>
+            {(!calmMode || showAllOptions) && (
+              <div className="callout callout-info">
+                <span className="callout-icon">📎</span>
+                <div className="callout-body">
+                  <strong>Accepted files:</strong> PDF, JPG, PNG, WebP.
+                  <p>Processing usually takes <strong>30 to 60 seconds</strong>.</p>
+                </div>
               </div>
-            </div>
+            )}
 
-            <div
+            <button
+              type="button"
               className={`upload-zone ${file ? 'has-file' : ''} ${dragging ? 'dragging' : ''}`}
               onClick={() => fileInputRef.current?.click()}
               onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
               onDragLeave={() => setDragging(false)}
               onDrop={handleDrop}
-              role="button"
-              tabIndex={0}
-              aria-label="Upload file area — click to browse or drag a file here"
+              aria-label="Upload file area. Click to browse or drag a file here"
               onKeyDown={(e) => e.key === 'Enter' && fileInputRef.current?.click()}
             >
               <input
@@ -154,30 +181,39 @@ export default function Upload() {
                   <span className="upload-zone-hint">Click to browse or drag a file here</span>
                 </>
               )}
-            </div>
+            </button>
 
-            <div className="form-group" style={{ maxWidth: 280 }}>
-              <label htmlFor="upload-lang">Insight language</label>
-              <select
-                id="upload-lang"
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
-            </div>
+            {(!calmMode || showAllOptions) && (
+              <div className="form-group" style={{ maxWidth: 280 }}>
+                <label htmlFor="upload-lang">Insight language</label>
+                <select
+                  id="upload-lang"
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                >
+                  {LANGUAGES.map((l) => (
+                    <option key={l.value} value={l.value}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-            {error && <div className="alert alert-error">{error}</div>}
+            {error && <div className="alert alert-error" role="alert">{error}</div>}
 
             <button
               className="btn btn-primary"
               onClick={handleUpload}
               disabled={!file || uploading}
+              aria-label="Upload statement and generate summary"
             >
               {uploading ? 'Analysing statement… (this may take a moment)' : 'Upload & Analyse'}
             </button>
+
+            {calmMode && !showAllOptions && (
+              <button className="btn btn-secondary btn-full" type="button" onClick={() => setShowAllOptions(true)} aria-label="Show more upload options">
+                Show more options
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -9,3 +9,5 @@ gradio_client
 matplotlib
 plotly
 numpy
+pytest
+pytest-flask
