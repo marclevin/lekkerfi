@@ -56,6 +56,28 @@ export function getAccounts() {
   return request('/absa/accounts')
 }
 
+// ── Statements ────────────────────────────────────────────────────────────────
+
+export function uploadStatement(file, language) {
+  const token = getToken()
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('language', language)
+  return fetch(`${BASE}/statements/upload`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+    return data
+  })
+}
+
+export function listStatements() {
+  return request('/statements/')
+}
+
 // ── Insights ──────────────────────────────────────────────────────────────────
 
 export function generateInsight(selected_accounts, language) {
@@ -77,5 +99,30 @@ export function translateInsight(id, language) {
   return request(`/insights/${id}/translate`, {
     method: 'POST',
     body: JSON.stringify({ language }),
+  })
+}
+
+export function visualizeInsight(id) {
+  return request(`/insights/${id}/visualize`)
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────────
+
+export function listChatSessions() {
+  return request('/chat/sessions')
+}
+
+export function createChatSession(body = {}) {
+  return request('/chat/sessions', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function getChatMessages(sessionId) {
+  return request(`/chat/sessions/${sessionId}/messages`)
+}
+
+export function sendChatMessage(sessionId, message, language) {
+  return request(`/chat/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ message, language }),
   })
 }

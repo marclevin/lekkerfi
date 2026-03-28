@@ -33,7 +33,7 @@ export default function Register() {
       // Auto-login after registration
       const data = await apiLogin({ email: form.email, password: form.password })
       login(data.access_token, data.user)
-      navigate('/flow')
+      navigate('/home')
     } catch (err) {
       setError(err.message)
     } finally {

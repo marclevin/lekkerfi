@@ -12,11 +12,11 @@ import { useAuth } from '../context/AuthContext'
 const STEPS = ['Start Session', 'Approve SureCheck', 'Select Accounts', 'View Insight']
 
 const LANGUAGES = [
-  { value: 'xhosa', label: 'isiXhosa' },
-  { value: 'zulu', label: 'isiZulu' },
+  { value: 'xhosa',     label: 'isiXhosa' },
+  { value: 'zulu',      label: 'isiZulu' },
   { value: 'afrikaans', label: 'Afrikaans' },
-  { value: 'sotho', label: 'Sesotho' },
-  { value: 'english', label: 'English' },
+  { value: 'sotho',     label: 'Sesotho' },
+  { value: 'english',   label: 'English' },
 ]
 
 function StepIndicator({ current }) {
@@ -57,10 +57,20 @@ function StepStartSession({ onDone }) {
     <div className="step-content">
       <h2>Start Consent Session</h2>
       <p className="step-desc">
-        This will request a long-lived consent from ABSA for account{' '}
-        <strong>{user?.access_account}</strong> and send a SureCheck to your registered email.
+        Kick off a secure authorisation request with ABSA. This allows LekkerFi to read your
+        transaction history — without storing your banking credentials.
       </p>
+
+      <div className="callout callout-info">
+        <span className="callout-icon">🔒</span>
+        <div className="callout-body">
+          <strong>What happens next:</strong>
+          <p>ABSA will send a <strong>SureCheck</strong> notification to your registered email address for account <strong>{user?.access_account}</strong>. You'll need to approve it in the next step.</p>
+        </div>
+      </div>
+
       {error && <div className="alert alert-error">{error}</div>}
+
       <button className="btn btn-primary" onClick={handleStart} disabled={loading}>
         {loading ? 'Starting…' : 'Start Session'}
       </button>
@@ -110,10 +120,18 @@ function StepSurecheck({ sessionData, onDone }) {
     <div className="step-content">
       <h2>Approve SureCheck</h2>
       <p className="step-desc">
-        A SureCheck request was sent (reference:{' '}
-        <code>{sessionData?.surecheck?.absaReference || '—'}</code>). Load your pending
-        SureChecks below and accept to continue.
+        ABSA sent a SureCheck approval request to your registered email.
+        Load your pending requests below, then click <strong>Accept</strong> to continue.
       </p>
+
+      <div className="callout callout-tip">
+        <span className="callout-icon">💡</span>
+        <div className="callout-body">
+          <strong>Tip:</strong> Check your email inbox for a message from ABSA with reference{' '}
+          <code>{sessionData?.surecheck?.absaReference || '—'}</code>. Once you see it, click
+          "Load SureChecks" below.
+        </div>
+      </div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
@@ -124,7 +142,12 @@ function StepSurecheck({ sessionData, onDone }) {
       {surechecks !== null && (
         <div className="surecheck-list">
           {surechecks.length === 0 ? (
-            <p className="empty-hint">No pending SureChecks found. Try loading again.</p>
+            <div className="callout callout-tip">
+              <span className="callout-icon">⏳</span>
+              <div className="callout-body">
+                No pending SureChecks found yet. Wait a moment for the email to arrive, then try loading again.
+              </div>
+            </div>
           ) : (
             surechecks.map((sc) => (
               <div key={sc.absaReference} className="surecheck-item">
@@ -208,9 +231,16 @@ function StepAccounts({ onDone }) {
     <div className="step-content">
       <h2>Select Accounts</h2>
       <p className="step-desc">
-        Load your accounts, choose which ones to analyse, pick a language, then generate your
-        financial insights.
+        Load your linked ABSA accounts, select which ones to analyse, choose a language for your
+        insights summary, then generate.
       </p>
+
+      <div className="callout callout-info">
+        <span className="callout-icon">📊</span>
+        <div className="callout-body">
+          <strong>What you'll get:</strong> A financial summary of your last 90 days of transactions — including spending categories, income, and trends — translated into your chosen language.
+        </div>
+      </div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
@@ -225,10 +255,10 @@ function StepAccounts({ onDone }) {
           ) : (
             <div className="account-list">
               {accounts.map((acc) => {
-                const num = acc.accountNumber || acc.account_number
-                const name = acc.accountName || acc.account_name || num
+                const num  = acc.accountNumber  || acc.account_number
+                const name = acc.accountName    || acc.account_name || num
                 const balance = acc.currentBalance || acc.current_balance || '—'
-                const type = acc.accountType || acc.account_type || ''
+                const type = acc.accountType    || acc.account_type || ''
                 return (
                   <label key={num} className={`account-item ${selected.includes(num) ? 'selected' : ''}`}>
                     <input
@@ -249,16 +279,10 @@ function StepAccounts({ onDone }) {
           )}
 
           <div className="form-group generate-options">
-            <label htmlFor="language">Translation language</label>
-            <select
-              id="language"
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-            >
+            <label htmlFor="language">Insight language</label>
+            <select id="language" value={language} onChange={(e) => setLanguage(e.target.value)}>
               {LANGUAGES.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
+                <option key={l.value} value={l.value}>{l.label}</option>
               ))}
             </select>
           </div>
@@ -291,10 +315,17 @@ function StepInsight({ insight }) {
         <strong>{insight.accounts?.join(', ')}</strong>.
       </p>
 
+      <div className="callout callout-success">
+        <span className="callout-icon">✅</span>
+        <div className="callout-body">
+          Insights generated successfully! Head to your <strong>Home</strong> dashboard to see the full charts and visualisations.
+        </div>
+      </div>
+
       <div className="insight-section">
         <h3>Summary</h3>
         <div className="insight-bullets">
-          {insight.simplified?.split('\n').map((line, i) => (
+          {insight.simplified?.split('\n').filter(Boolean).map((line, i) => (
             <p key={i}>{line}</p>
           ))}
         </div>
@@ -308,18 +339,18 @@ function StepInsight({ insight }) {
           </span>
         </h3>
         <div className="insight-bullets translated">
-          {insight.translated?.split('\n').map((line, i) => (
+          {insight.translated?.split('\n').filter(Boolean).map((line, i) => (
             <p key={i}>{line}</p>
           ))}
         </div>
       </div>
 
       <div className="insight-actions">
+        <button className="btn btn-primary" onClick={() => navigate('/home')}>
+          View Dashboard
+        </button>
         <button className="btn btn-secondary" onClick={() => navigate('/insights')}>
           View all insights
-        </button>
-        <button className="btn btn-ghost" onClick={() => window.location.reload()}>
-          Start new analysis
         </button>
       </div>
     </div>
@@ -333,27 +364,18 @@ export default function Flow() {
   const [sessionData, setSessionData] = useState(null)
   const [insight, setInsight] = useState(null)
 
-  function handleSessionDone(data) {
-    setSessionData(data)
-    setStep(1)
-  }
-
-  function handleSurecheckDone() {
-    setStep(2)
-  }
-
-  function handleInsightDone(data) {
-    setInsight(data)
-    setStep(3)
-  }
-
   return (
     <div className="page">
+      <div className="page-header">
+        <h1>Connect ABSA Account</h1>
+        <p>A secure 4-step process to link your account and generate financial insights.</p>
+      </div>
+
       <StepIndicator current={step} />
       <div className="card flow-card">
-        {step === 0 && <StepStartSession onDone={handleSessionDone} />}
-        {step === 1 && <StepSurecheck sessionData={sessionData} onDone={handleSurecheckDone} />}
-        {step === 2 && <StepAccounts onDone={handleInsightDone} />}
+        {step === 0 && <StepStartSession onDone={(data) => { setSessionData(data); setStep(1) }} />}
+        {step === 1 && <StepSurecheck sessionData={sessionData} onDone={() => setStep(2)} />}
+        {step === 2 && <StepAccounts onDone={(data) => { setInsight(data); setStep(3) }} />}
         {step === 3 && insight && <StepInsight insight={insight} />}
       </div>
     </div>

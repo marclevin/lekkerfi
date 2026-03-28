@@ -6,3 +6,6 @@ sqlalchemy
 bcrypt
 openai
 gradio_client
+matplotlib
+plotly
+numpy

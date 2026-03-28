@@ -21,7 +21,7 @@ export default function Login() {
     try {
       const data = await apiLogin(form)
       login(data.access_token, data.user)
-      navigate('/flow')
+      navigate('/home')
     } catch (err) {
       setError(err.message)
     } finally {

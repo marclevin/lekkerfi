@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { getInsight, listInsights, translateInsight } from '../api/client'
+import { useCallback, useEffect, useState } from 'react'
+import { getInsight, listInsights, translateInsight, visualizeInsight } from '../api/client'
 
 const LANGUAGES = [
   { value: 'xhosa', label: 'isiXhosa' },
@@ -8,6 +8,8 @@ const LANGUAGES = [
   { value: 'sotho', label: 'Sesotho' },
   { value: 'english', label: 'English' },
 ]
+
+const CHART_PRIORITY = ['spending_overview', 'balance_progression', 'daily_trend', 'category_breakdown']
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-ZA', {
@@ -19,6 +21,40 @@ function formatDate(iso) {
   })
 }
 
+function fmt(value) {
+  if (value == null) return '—'
+  return `R ${Number(value).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// ── Chart zoom modal ───────────────────────────────────────────────────────────
+
+function ChartModal({ viz, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="chart-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label={viz.title}>
+      <div className="chart-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="chart-modal-top">
+          <div className="chart-modal-info">
+            <h3>{viz.title}</h3>
+            <p>{viz.description}</p>
+          </div>
+          <button className="chart-modal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="chart-modal-body">
+          <img src={viz.url} alt={viz.title} className="chart-modal-img" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Insight detail ─────────────────────────────────────────────────────────────
+
 function InsightDetail({ id, onClose }) {
   const [insight, setInsight] = useState(null)
   const [activeTab, setActiveTab] = useState('simplified')
@@ -26,8 +62,24 @@ function InsightDetail({ id, onClose }) {
   const [translating, setTranslating] = useState(false)
   const [error, setError] = useState('')
 
+  const [viz, setViz] = useState(null)
+  const [vizLoading, setVizLoading] = useState(true)
+  const [colorblind, setColorblind] = useState(false)
+  const [zoomedChart, setZoomedChart] = useState(null)
+
+  const handleZoom = useCallback((c) => setZoomedChart(c), [])
+  const handleCloseZoom = useCallback(() => setZoomedChart(null), [])
+
   useEffect(() => {
     getInsight(id).then(setInsight).catch((e) => setError(e.message))
+  }, [id])
+
+  useEffect(() => {
+    setVizLoading(true)
+    visualizeInsight(id)
+      .then(setViz)
+      .catch(() => {}) // charts are non-critical
+      .finally(() => setVizLoading(false))
   }, [id])
 
   async function handleTranslate() {
@@ -65,6 +117,10 @@ function InsightDetail({ id, onClose }) {
   }
 
   const currentTranslation = insight.translations?.find((t) => t.language === activeTab)
+  const summary = viz?.summary
+  const charts = viz?.visualizations
+    ? [...viz.visualizations].sort((a, b) => CHART_PRIORITY.indexOf(a.type) - CHART_PRIORITY.indexOf(b.type))
+    : []
 
   return (
     <div className="insight-detail">
@@ -79,7 +135,80 @@ function InsightDetail({ id, onClose }) {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      <div className="tab-bar">
+      {/* ── Key stats ── */}
+      {summary && (
+        <div className="snap-stats-row" style={{ marginBottom: '1.25rem' }}>
+          <div className="snap-stat">
+            <span className="snap-stat-label">Income</span>
+            <span className="snap-stat-value positive">↑ {fmt(summary.total_income)}</span>
+          </div>
+          <div className="snap-stat">
+            <span className="snap-stat-label">Expenses</span>
+            <span className="snap-stat-value negative">↓ {fmt(summary.total_expenses)}</span>
+          </div>
+          <div className="snap-stat">
+            <span className="snap-stat-label">Net Flow</span>
+            <span className={`snap-stat-value${summary.net_flow >= 0 ? ' positive' : ' negative'}`}>
+              {fmt(summary.net_flow)}
+            </span>
+          </div>
+          <div className="snap-stat">
+            <span className="snap-stat-label">Balance</span>
+            <span className="snap-stat-value">{fmt(summary.account_balance)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Charts ── */}
+      {vizLoading && (
+        <div className="page-center" style={{ minHeight: 80 }}>
+          <div className="spinner" />
+        </div>
+      )}
+
+      {!vizLoading && charts.length > 0 && (
+        <>
+          <div className="snapshot-charts-bar">
+            <span className="snapshot-charts-label">Charts</span>
+            <label className="cb-toggle-row" title="Grayscale for colour-blind viewing">
+              <span className="cb-toggle-label">Grayscale</span>
+              <span className="toggle-switch">
+                <input type="checkbox" checked={colorblind} onChange={(e) => setColorblind(e.target.checked)} />
+                <span className="toggle-slider" />
+              </span>
+            </label>
+          </div>
+
+          <div className="chart-grid">
+            {charts.map((c) => (
+              <div
+                key={c.type}
+                className="chart-card card"
+                onClick={() => handleZoom(c)}
+                role="button"
+                tabIndex={0}
+                aria-label={`Expand: ${c.title}`}
+                onKeyDown={(e) => e.key === 'Enter' && handleZoom(c)}
+              >
+                <div className="chart-header">
+                  <span className="chart-title">{c.title}</span>
+                  <span className="chart-desc">{c.description}</span>
+                </div>
+                <img
+                  src={c.url}
+                  alt={c.title}
+                  className={`chart-img${colorblind ? ' colorblind' : ''}`}
+                  loading="lazy"
+                />
+                <p className="chart-zoom-hint">Tap to expand</p>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ── Text summary tabs ── */}
+      <div className="tab-bar" style={{ marginTop: '1.5rem' }}>
         <button
           className={`tab ${activeTab === 'simplified' ? 'active' : ''}`}
           onClick={() => setActiveTab('simplified')}
@@ -103,6 +232,7 @@ function InsightDetail({ id, onClose }) {
           : currentTranslation?.translated?.split('\n').map((line, i) => <p key={i}>{line}</p>)}
       </div>
 
+      {/* ── Translate ── */}
       <div className="translate-section">
         <h4>Add translation</h4>
         <div className="translate-row">
@@ -122,9 +252,13 @@ function InsightDetail({ id, onClose }) {
           </button>
         </div>
       </div>
+
+      {zoomedChart && <ChartModal viz={zoomedChart} onClose={handleCloseZoom} />}
     </div>
   )
 }
+
+// ── Insights list ──────────────────────────────────────────────────────────────
 
 export default function Insights() {
   const [insights, setInsights] = useState(null)
@@ -185,7 +319,7 @@ export default function Insights() {
               <span className="translation-count">
                 {ins.translations?.length || 0} translation{ins.translations?.length !== 1 ? 's' : ''}
               </span>
-              <span className="view-link">View →</span>
+              <span className="view-link">View charts & summary →</span>
             </div>
           </div>
         ))}

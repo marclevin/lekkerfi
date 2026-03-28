@@ -10,23 +10,17 @@ export default function NavBar() {
     navigate('/login')
   }
 
+  const initials = user?.email?.[0]?.toUpperCase() ?? '?'
+
   return (
     <nav className="navbar">
-      <Link to="/" className="navbar-brand">
-        LekkerFi
-      </Link>
+      <Link to="/" className="navbar-brand">LekkerFi</Link>
+
       {user && (
-        <div className="navbar-right">
-          <Link to="/flow" className="nav-link">
-            Flow
-          </Link>
-          <Link to="/insights" className="nav-link">
-            Insights
-          </Link>
+        <div className="navbar-actions">
+          <div className="user-avatar" title={user.email}>{initials}</div>
           <span className="nav-user">{user.email}</span>
-          <button className="btn btn-ghost" onClick={handleLogout}>
-            Log out
-          </button>
+          <button className="btn btn-ghost btn-sm" onClick={handleLogout}>Log out</button>
         </div>
       )}
     </nav>

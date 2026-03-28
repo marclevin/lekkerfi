@@ -7,6 +7,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from db.database import SessionLocal
 from db.models import Insight, Translation
 from services.combine import combine_transactions
+from services.insights_visualizer import FinancialInsightsVisualizer
 from services.simplify import simplify
 from services.translate import translate
 
@@ -158,6 +159,79 @@ def get_insight(insight_id: int):
         })
     finally:
         db.close()
+
+
+@insights_bp.get("/<int:insight_id>/visualize")
+@jwt_required()
+def visualize_insight(insight_id: int):
+    """
+    Generates financial visualizations for an insight from its stored transaction data.
+    Results are cached in memory for the lifetime of the server process.
+    """
+    user_id = int(get_jwt_identity())
+
+    viz_cache: dict = current_app.config.get("VIZ_CACHE", {})
+    if insight_id in viz_cache:
+        return jsonify(viz_cache[insight_id])
+
+    db = SessionLocal()
+    try:
+        insight = db.get(Insight, insight_id)
+        if not insight or insight.user_id != user_id:
+            return jsonify({"error": "Insight not found"}), 404
+        if not insight.raw_transactions:
+            return jsonify({"error": "No transaction data available for this insight"}), 400
+
+        combined = json.loads(insight.raw_transactions)
+        viz_input = _combined_to_viz_format(combined)
+
+        visualizer = FinancialInsightsVisualizer()
+        result = visualizer.generate_all_insights(viz_input)
+
+        # Replace absolute file paths with API-relative URLs
+        for viz in result.get("visualizations", []):
+            viz["url"] = f"/api/visualizations/{viz['filename']}"
+
+        viz_cache[insight_id] = result
+        current_app.config["VIZ_CACHE"] = viz_cache
+
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+
+def _combined_to_viz_format(combined: dict) -> dict:
+    """Convert the combine_transactions() output to the format expected by FinancialInsightsVisualizer."""
+    accounts = combined.get("accounts", [])
+    summary = combined.get("summary", {})
+
+    all_lines = []
+    line_num = 0
+    for acc in accounts:
+        for trx in acc.get("transactions", []):
+            all_lines.append({
+                "transactionDate": trx.get("date", ""),
+                "transactionDescription": trx.get("description", ""),
+                "transactionAmount": trx.get("amount", "0.00"),
+                "balanceAmount": trx.get("balance_after", "0.00"),
+                "lineNumber": line_num,
+                "transactionFee": trx.get("fee", "0.00"),
+                "transactionCategory": trx.get("category", 0),
+            })
+            line_num += 1
+
+    first_acc = accounts[0] if accounts else {}
+    return {
+        "transactionHistory": {
+            "accountHistoryLines": all_lines,
+            "currentBalance": summary.get("combined_current_balance")
+                              or first_acc.get("current_balance", "0.00"),
+            "availableBalance": summary.get("combined_available_balance")
+                                or first_acc.get("available_balance", "0.00"),
+        }
+    }
 
 
 @insights_bp.post("/<int:insight_id>/translate")

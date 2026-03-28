@@ -19,16 +19,30 @@ def _get_client(model: str = "gpt-4o-mini") -> tuple[OpenAI, str]:
     return OpenAI(api_key=api_key), model
 
 
+def _strip_markdown(text: str) -> str:
+    """Remove markdown styling while preserving text content."""
+    # Remove bold (**text** or __text__)
+    text = text.replace("**", "").replace("__", "")
+    # Remove italics (*text* or _text_)
+    # Be careful with single underscores (only if surrounded by word boundaries)
+    text = text.replace("*", "")
+    # Remove strikethrough (~~text~~)
+    text = text.replace("~~", "")
+    # Remove code formatting (`text`)
+    text = text.replace("`", "")
+    return text
+
+
 def _enforce_bullets_only(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     bullet_lines = [
-        f"- {line[2:].strip()}"
+        f"- {_strip_markdown(line[2:].strip())}"
         for line in lines
         if line.startswith(("- ", "* ", "• "))
     ]
     if bullet_lines:
         return "\n".join(bullet_lines)
-    return "\n".join(f"- {line}" for line in lines)
+    return "\n".join(f"- {_strip_markdown(line)}" for line in lines)
 
 
 def simplify(transactions: dict | str) -> str:
@@ -58,7 +72,9 @@ def simplify(transactions: dict | str) -> str:
             {
                 "role": "user",
                 "content": (
-                    "Simplify this transaction list JSON into clear financial insights. "
+                    "Simplify this transaction list JSON into clear financial insights."
+                    "Ensure that your insights focus on spending patterns, potential risks, and practical next steps for better financial health. "
+                    "You must ensure that you return balance information in your insights, and you should use the Rand currency symbol (R) when mentioning any amounts. "
                     "Focus on spending patterns, risks, and practical next steps.\n\n"
                     f"Transactions JSON:\n{transactions_json}"
                 ),

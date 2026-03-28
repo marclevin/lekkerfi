@@ -1,4 +1,5 @@
 .env
+.jwt_secret
 claude.md
 __pycache__/
 exports/
@@ -10,3 +11,4 @@ playpen_data/
 lekkerfi.db
 *.log
 plan.md
+uploads/
