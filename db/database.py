@@ -7,7 +7,16 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///lekkerfi.db")
-engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+
+if DATABASE_URL.startswith("postgres://"):
+    # Render may provide postgres://; SQLAlchemy expects postgresql://
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine_kwargs = {"echo": False}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 
 class Base(DeclarativeBase):

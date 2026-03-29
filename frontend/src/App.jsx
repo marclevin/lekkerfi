@@ -131,7 +131,6 @@ function getRouteCue(pathname) {
   }
   if (pathname === '/supporter') {
     return {
-      icon: '🤝',
       title: 'Supporter dashboard',
       hint: 'See your support overview and choose a focused workspace.',
       speech: 'You are on supporter dashboard overview. Choose Manage users for user care tasks, or Alerts for triage.'
@@ -159,6 +158,7 @@ function getRouteCue(pathname) {
     hint: 'Use the bottom tabs to move between pages.',
     speech: 'You are on this page. Use the bottom tabs to move between pages.'
   }
+
 }
 
 export default function App() {
@@ -216,20 +216,10 @@ export default function App() {
     const isUser = user?.role === 'user'
     if (!isUser) return
 
-    // Safety-triggered auto calm mode must take precedence over stale manual overrides.
-    if (calmAutoMode) {
-      if (calmManualOverride) {
-        setCalmManualOverride(false)
-        writeCalmManualOverride(false)
-      }
-      setCalmMode(true)
-      writeCalmManualMode(true)
-      return
-    }
-
+    // Calm mode is always user-controllable.
     if (calmManualOverride) return
-    setCalmMode(false)
-    writeCalmManualMode(false)
+    setCalmMode(Boolean(calmAutoMode))
+    writeCalmManualMode(Boolean(calmAutoMode))
   }, [user?.role, calmAutoMode, calmManualOverride])
 
   function toggleCalmMode() {
@@ -281,13 +271,13 @@ export default function App() {
 
   function calmBannerText(reason) {
     const key = String(reason || '').toLowerCase()
-    if (key.includes('supporter')) return 'We simplified your screen because your supporter asked for a calmer flow.'
-    if (key.includes('cadence')) return 'We simplified your screen to slow things down and keep your next steps clear.'
-    if (key.includes('spending')) return 'We simplified your screen because your recent spending pattern looked high-risk.'
-    return 'We simplified your screen to help you focus on safer money steps.'
+    if (key.includes('supporter')) return 'supporter requested extra safety'
+    if (key.includes('cadence')) return 'rapid high-risk chat pattern detected'
+    if (key.includes('spending')) return 'recent spending pattern looked high-risk'
+    return 'high-risk money safety signal detected'
   }
 
-  const showCalmAutoBanner = Boolean(user?.role === 'user' && calmMode && calmAutoMode && !calmManualOverride)
+  const showCalmAutoBanner = Boolean(user?.role === 'user' && calmAutoMode)
 
   return (
     <>
@@ -324,7 +314,7 @@ export default function App() {
         {showCalmAutoBanner && (
           <div className="calm-auto-banner" role="status" aria-live="polite">
             <span className="calm-auto-banner-icon" aria-hidden="true">🌿</span>
-            <span className="calm-auto-banner-text">{calmBannerText(calmReason)}</span>
+            <span className="calm-auto-banner-text">{`Safety signal: ${calmBannerText(calmReason)}. You can turn calm mode on or off anytime.`}</span>
           </div>
         )}
         <Routes>

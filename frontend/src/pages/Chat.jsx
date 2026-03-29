@@ -8,6 +8,7 @@ import {
   activateCalmAutoMode,
   readStoredBoolean,
   subscribeCalmModeChanges,
+  writeCalmAutoMode,
   CALM_MODE_KEY,
   getCalmingPauseMessage,
 } from '../utils/calmMode'
@@ -213,6 +214,9 @@ export default function Chat() {
           })
           if (Boolean(latest.is_paused) && String(latest.paused_reason || '').startsWith('safety_')) {
             activateCalmAutoMode({ reason: 'chat_pause_signal', source: 'coach_signals' })
+          } else if (!Boolean(latest.is_paused)) {
+            // If supporter has unpaused the chat, release any stale auto calm lock.
+            writeCalmAutoMode(false)
           }
           const { messages: msgs } = await getChatMessages(latest.id)
           setMessages(msgs)
@@ -339,6 +343,9 @@ export default function Chat() {
       const trigger = detectAutoCalmTrigger(text, data, manicCadenceDetected)
       if (trigger.triggered) {
         activateCalmAutoMode({ reason: trigger.reason, source: trigger.source })
+      } else if (!Boolean(data.chat_paused)) {
+        // No active pause/risk signal in this turn; keep calm mode user-controlled.
+        writeCalmAutoMode(false)
       }
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== optimistic.id),

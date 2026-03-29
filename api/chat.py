@@ -287,6 +287,8 @@ def send_chat_message(session_id: int):
                 "can_afford": coach_signals.get("can_afford"),
                 "safety": safety_payload,
             })
+            db.commit()
+            db.refresh(session)
 
         created_alert_ids = []
         try:

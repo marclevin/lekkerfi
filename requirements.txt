@@ -1,8 +1,11 @@
 flask
+flask-cors
 flask-jwt-extended
 python-dotenv
 requests
 sqlalchemy
+gunicorn
+psycopg2-binary
 bcrypt
 openai
 gradio_client

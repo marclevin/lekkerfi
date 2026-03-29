@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, send_from_directory
+from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 
 from absa_flow.absa_client import AbsaPlaypenClient
@@ -39,6 +40,14 @@ def create_app() -> Flask:
     load_dotenv()
     app = Flask(__name__)
 
+    frontend_origins_raw = os.getenv("FRONTEND_ORIGIN", "")
+    if frontend_origins_raw.strip():
+        origins = [o.strip() for o in frontend_origins_raw.split(",") if o.strip()]
+    else:
+        origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    CORS(app, resources={r"/api/*": {"origins": origins}})
+
     app.config["JWT_SECRET_KEY"] = _get_jwt_secret()
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=30)
     app.config["VIZ_CACHE"] = {}
@@ -67,6 +76,10 @@ def create_app() -> Flask:
     app.register_blueprint(insights_bp, url_prefix="/api/insights")
     app.register_blueprint(statements_bp, url_prefix="/api/statements")
     app.register_blueprint(supporters_bp, url_prefix="/api/supporters")
+
+    @app.get("/api/health")
+    def health_check():
+        return {"status": "ok"}, 200
 
     @app.route("/api/visualizations/<path:filename>")
     def serve_visualization(filename):

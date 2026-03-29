@@ -177,6 +177,15 @@ code {
   color: #14532d;
 }
 
+.route-cue-calm-btn.locked,
+.route-cue-calm-btn:disabled {
+  border-color: #059669;
+  background: #d1fae5;
+  color: #065f46;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
 body.calm-mode main[data-user-role="user"] .route-cue { background: #f3f4f6; border-color: #d1d5db; }
 body.calm-mode main[data-user-role="user"] .route-cue-title,
 body.calm-mode main[data-user-role="user"] .route-cue-body,
