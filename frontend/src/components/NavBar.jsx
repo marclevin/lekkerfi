@@ -12,6 +12,7 @@ export default function NavBar() {
 
   const displayName = user?.full_name || user?.email || ''
   const initials = displayName[0]?.toUpperCase() ?? '?'
+  const isSupporter = user?.role === 'supporter'
 
   return (
     <nav className="navbar" aria-label="Top navigation">
@@ -19,16 +20,16 @@ export default function NavBar() {
 
       {user && (
         <div className="navbar-actions">
-          {user.role === 'supporter' && (
-            <Link to="/supporter" className="btn btn-ghost btn-sm" aria-label="Go to supporter dashboard">Dashboard</Link>
+          {!isSupporter && (
+            <>
+              <Link to="/profile" className="user-avatar" title={`${user.email} — Edit profile`} aria-label="Open profile settings">
+                {initials}
+              </Link>
+              <div className="nav-user-info">
+                <span className="nav-user">{user.full_name || user.email?.split('@')[0]}</span>
+              </div>
+            </>
           )}
-          <Link to="/profile" className="user-avatar" title={`${user.email} — Edit profile`} aria-label="Open profile settings">
-            {initials}
-          </Link>
-          <div className="nav-user-info">
-            <span className="nav-user">{user.full_name || user.email?.split('@')[0]}</span>
-            {user.role === 'supporter' && <span className="nav-role-badge">Supporter</span>}
-          </div>
           <button className="btn btn-ghost btn-sm" onClick={handleLogout} aria-label="Log out of your account">Log out</button>
         </div>
       )}

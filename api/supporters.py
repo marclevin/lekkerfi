@@ -781,6 +781,13 @@ def dashboard_user_details(user_id: int):
             .order_by(SupporterNote.updated_at.desc())
             .all()
         )
+        statements = (
+            db.query(Statement)
+            .filter(Statement.user_id == user.id)
+            .order_by(Statement.created_at.desc())
+            .limit(30)
+            .all()
+        )
 
         latest_chat = (
             db.query(FinanceChatSession)
@@ -823,6 +830,16 @@ def dashboard_user_details(user_id: int):
                 "recurring_bills": recurring_bills,
                 "payday_note": payday_note,
             },
+            "statement_history": [
+                {
+                    "id": s.id,
+                    "original_filename": s.original_filename,
+                    "status": s.status,
+                    "created_at": s.created_at.isoformat(),
+                    "insight_id": s.insight_id,
+                }
+                for s in statements
+            ],
             "management": {
                 "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
                 "last_chat_at": latest_chat.updated_at.isoformat() if latest_chat else None,
@@ -1136,6 +1153,7 @@ def send_supporter_chat_message(user_id: int):
     supporter_id = get_jwt_identity()
     data = request.get_json() or {}
     message = (data.get("message") or "").strip()
+    language = (data.get("language") or "english").strip().lower()
     if not message:
         return jsonify({"error": "message is required"}), 400
 
@@ -1185,6 +1203,7 @@ def send_supporter_chat_message(user_id: int):
             raw_transactions=raw_transactions,
             simplified_text=simplified_text,
             history=history,
+            language=language,
         )
 
         supporter_msg = SupporterChatMessage(
@@ -1218,6 +1237,34 @@ def send_supporter_chat_message(user_id: int):
                 "text": result["assistant_text"],
                 "created_at": assistant_msg.created_at.isoformat(),
             },
+        })
+    finally:
+        db.close()
+
+
+@supporters_bp.route("/chat/<int:user_id>/reset", methods=["POST"])
+@jwt_required()
+def reset_supporter_chat_messages(user_id: int):
+    """Delete supporter chat history for a linked user so a new conversation can start clean."""
+    supporter_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        link = db.query(UserSupporter).filter_by(
+            user_id=user_id, linked_supporter_id=supporter_id
+        ).first()
+        if not link:
+            return jsonify({"error": "Not linked to this user"}), 403
+
+        deleted_count = (
+            db.query(SupporterChatMessage)
+            .filter_by(supporter_id=supporter_id, user_id=user_id)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+
+        return jsonify({
+            "message": "Supporter chat history cleared",
+            "deleted_count": int(deleted_count or 0),
         })
     finally:
         db.close()

@@ -145,10 +145,16 @@ export function getSupporterChatMessages(userId) {
   return request(`/supporters/chat/${userId}/messages`)
 }
 
-export function sendSupporterChatMessage(userId, message) {
+export function sendSupporterChatMessage(userId, message, language = 'english') {
   return request(`/supporters/chat/${userId}/send`, {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, language }),
+  })
+}
+
+export function resetSupporterChatMessages(userId) {
+  return request(`/supporters/chat/${userId}/reset`, {
+    method: 'POST',
   })
 }
 

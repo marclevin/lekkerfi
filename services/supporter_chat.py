@@ -18,6 +18,8 @@ from services.finance_chat import (
     _compact_transactions,
     _format_money,
     _parse_iso_date,
+    _translate_from_english_with_fallback,
+    _translate_to_english_with_fallback,
     _to_decimal,
 )
 
@@ -48,6 +50,12 @@ def _build_supporter_system_prompt(user_name: str, financial_context: str) -> st
         f"Financial data for {first_name}:\n"
         f"{financial_context}"
     )
+
+
+def _normalize_language(language: str | None) -> str:
+    if not language:
+        return 'english'
+    return language.strip().lower()
 
 
 def _build_care_signals(condensed: list[dict], summary: dict, user_name: str) -> str:
@@ -134,6 +142,7 @@ def generate_supporter_chat_reply(
     raw_transactions: dict | str | None,
     simplified_text: str | None,
     history: list[dict],
+    language: str = 'english',
 ) -> dict:
     """
     Generate a reply for a supporter asking about a linked user's finances.
@@ -181,6 +190,14 @@ def generate_supporter_chat_reply(
 
     client, model = _get_client()
 
+    normalized_language = _normalize_language(language)
+    supporter_message_english = supporter_message.strip()
+    if normalized_language != 'english':
+        supporter_message_english = _translate_to_english_with_fallback(
+            supporter_message_english,
+            source_language=normalized_language,
+        )
+
     messages: list[dict] = [
         {"role": "system", "content": _build_supporter_system_prompt(user_name, financial_context)}
     ]
@@ -192,7 +209,7 @@ def generate_supporter_chat_reply(
         if text:
             messages.append({"role": openai_role, "content": text})
 
-    messages.append({"role": "user", "content": supporter_message.strip()})
+    messages.append({"role": "user", "content": supporter_message_english})
 
     completion = client.chat.completions.create(
         model=model,
@@ -200,11 +217,20 @@ def generate_supporter_chat_reply(
         messages=messages,
     )
 
-    assistant_text = (completion.choices[0].message.content or "").strip()
-    if not assistant_text:
-        assistant_text = "I could not generate a response. Please try again."
+    assistant_text_english = (completion.choices[0].message.content or "").strip()
+    if not assistant_text_english:
+        assistant_text_english = "I could not generate a response. Please try again."
+
+    assistant_text = assistant_text_english
+    if normalized_language != 'english':
+        assistant_text = _translate_from_english_with_fallback(
+            assistant_text_english,
+            target_language=normalized_language,
+        )
 
     return {
         "assistant_text": assistant_text,
+        "assistant_text_english": assistant_text_english,
+        "language": normalized_language,
         "generated_at": datetime.utcnow().isoformat(),
     }
