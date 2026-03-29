@@ -211,6 +211,21 @@ class SupporterNote(Base):
     supporter = relationship("User", foreign_keys=[supporter_id])
 
 
+class SupporterLinkRequest(Base):
+    """Supporter-initiated request to be linked to an existing user account."""
+    __tablename__ = "supporter_link_requests"
+
+    id = Column(Integer, primary_key=True)
+    supporter_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")  # pending | approved | declined
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    supporter = relationship("User", foreign_keys=[supporter_id])
+    user = relationship("User", foreign_keys=[user_id])
+
+
 class SupporterChatMessage(Base):
     """AI chat messages between a supporter and LekkerFi about a linked user."""
     __tablename__ = "supporter_chat_messages"

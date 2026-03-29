@@ -345,6 +345,226 @@ def _build_supporter_pause_message(
     )
 
 
+def _dangerous_intent_signals(
+    text: str,
+    recent_user_msgs: list[str],
+    urgency_level: str,
+    emotional_distress: bool,
+    repeated_intent: bool,
+    can_afford: bool | None,
+    decision_intent: bool,
+) -> dict:
+    categories = {
+        "mania_impulsivity": {
+            "label": "mania or impulsive state",
+            "high": (
+                "i am manic",
+                "i'm manic",
+                "i feel manic",
+                "i cannot stop spending",
+                "i can't stop spending",
+                "i cant stop spending",
+                "out of control spending",
+            ),
+            "medium": (
+                "impulsive",
+                "impulse",
+                "panic buy",
+                "panic spending",
+                "cannot think",
+                "can't think",
+                "overwhelmed",
+            ),
+            "pause_reason": "safety_mania_impulsivity",
+            "template_key": "mania_impulsivity_pause",
+        },
+        "illegal_drugs_purchase": {
+            "label": "illegal drug purchase intent",
+            "high": (
+                "buy cocaine",
+                "buy meth",
+                "buy heroin",
+                "buy ecstasy",
+                "buy crack",
+                "buy illegal drugs",
+                "purchase drugs",
+            ),
+            "medium": (
+                "buy weed",
+                "buy marijuana",
+                "buy pills",
+                "buy xanax",
+                "buy codeine",
+                "buy substances",
+                "dealer",
+                "drug money",
+            ),
+            "pause_reason": "safety_illegal_drugs_purchase",
+            "template_key": "illegal_drugs_pause",
+        },
+        "weapons_purchase": {
+            "label": "weapon purchase intent",
+            "high": (
+                "buy a gun",
+                "buy gun",
+                "buy ammo",
+                "buy ammunition",
+                "buy firearm",
+                "purchase weapon",
+            ),
+            "medium": (
+                "buy knife",
+                "buy weapon",
+                "buy taser",
+                "buy pepper spray",
+                "arm myself",
+            ),
+            "pause_reason": "safety_weapons_purchase",
+            "template_key": "weapons_pause",
+        },
+        "self_harm": {
+            "label": "self-harm indicator",
+            "high": (
+                "kill myself",
+                "hurt myself",
+                "end my life",
+                "suicide",
+                "self harm",
+            ),
+            "medium": (
+                "i want to disappear",
+                "i don't want to be here",
+                "i dont want to be here",
+                "no reason to live",
+            ),
+            "pause_reason": "safety_self_harm",
+            "template_key": "self_harm_pause",
+        },
+        "violence_threat": {
+            "label": "violence or threat indicator",
+            "high": (
+                "hurt someone",
+                "kill someone",
+                "attack someone",
+                "shoot someone",
+                "stab someone",
+            ),
+            "medium": (
+                "get revenge",
+                "make them pay",
+                "threaten",
+                "fight them",
+                "violent",
+            ),
+            "pause_reason": "safety_violence_threat",
+            "template_key": "violence_pause",
+        },
+        "harmful_spending": {
+            "label": "harmful spending pattern",
+            "high": (
+                "gamble all my money",
+                "bet my paycheck",
+                "bet my salary",
+                "binge spend",
+                "spend everything",
+            ),
+            "medium": (
+                "gambling",
+                "casino",
+                "sports bet",
+                "bet now",
+                "slot machine",
+                "online betting",
+            ),
+            "pause_reason": "safety_harmful_spending",
+            "template_key": "harmful_spending_pause",
+        },
+    }
+
+    text_hits: list[dict[str, str]] = []
+    best_match: dict | None = None
+
+    for category, cfg in categories.items():
+        high_tokens: tuple[str, ...] = cfg["high"]
+        medium_tokens: tuple[str, ...] = cfg["medium"]
+        high_hits = [kw for kw in high_tokens if kw in text]
+        medium_hits = [kw for kw in medium_tokens if kw in text]
+        history_hits = sum(
+            1
+            for msg in recent_user_msgs
+            if msg and any(kw in msg for kw in (high_tokens + medium_tokens))
+        )
+
+        if not high_hits and not medium_hits and history_hits == 0:
+            continue
+
+        confidence = "low"
+        if high_hits:
+            confidence = "high"
+        elif len(medium_hits) >= 2 or (medium_hits and history_hits > 0):
+            confidence = "medium"
+        elif medium_hits:
+            confidence = "medium" if urgency_level != "low" or emotional_distress or repeated_intent else "low"
+
+        qualifiers = {
+            "urgency": urgency_level != "low",
+            "emotional_distress": emotional_distress,
+            "repeated_intent": repeated_intent,
+            "cannot_afford": can_afford is False,
+            "decision_intent": decision_intent,
+            "history_repetition": history_hits > 0,
+        }
+
+        pause_recommended = confidence == "high" or (
+            confidence == "medium" and any(qualifiers.values())
+        )
+
+        evidence = (high_hits + medium_hits)[:3]
+        for token in evidence:
+            text_hits.append({"category": category, "token": token})
+
+        candidate = {
+            "detected": True,
+            "safety_category": category,
+            "safety_label": cfg["label"],
+            "safety_confidence": confidence,
+            "safety_pause_reason": cfg["pause_reason"],
+            "safety_calming_template_key": cfg["template_key"],
+            "safety_language_variant": "simplified" if (emotional_distress or confidence == "high") else "standard",
+            "safety_evidence": evidence,
+            "pause_recommended": pause_recommended,
+            "qualifiers": qualifiers,
+        }
+
+        if best_match is None:
+            best_match = candidate
+            continue
+
+        rank = {"low": 0, "medium": 1, "high": 2}
+        curr = rank.get(str(best_match.get("safety_confidence")), 0)
+        new = rank.get(confidence, 0)
+        if new > curr or (new == curr and pause_recommended and not best_match.get("pause_recommended")):
+            best_match = candidate
+
+    if not best_match:
+        return {
+            "detected": False,
+            "safety_category": None,
+            "safety_label": None,
+            "safety_confidence": "none",
+            "safety_pause_reason": None,
+            "safety_calming_template_key": "general_pause",
+            "safety_language_variant": "standard",
+            "safety_evidence": [],
+            "pause_recommended": False,
+            "qualifiers": {},
+            "all_hits": [],
+        }
+
+    best_match["all_hits"] = text_hits
+    return best_match
+
+
 def _decision_risk_signals(
     user_english: str,
     history_english: list[dict],
@@ -434,10 +654,30 @@ def _decision_risk_signals(
         risk_score += 2
     if repeated_intent:
         risk_score += 1
-    if pause_required:
+
+    dangerous_intent = _dangerous_intent_signals(
+        text=text,
+        recent_user_msgs=recent_user_msgs,
+        urgency_level=urgency_level,
+        emotional_distress=emotional_distress,
+        repeated_intent=repeated_intent,
+        can_afford=can_afford,
+        decision_intent=decision_intent,
+    )
+    if dangerous_intent["detected"]:
+        if dangerous_intent["safety_confidence"] == "high":
+            risk_score += 4
+        elif dangerous_intent["safety_confidence"] == "medium":
+            risk_score += 2
+        else:
+            risk_score += 1
+
+    effective_pause_required = bool(pause_required or dangerous_intent["pause_recommended"])
+    effective_pause_reason = dangerous_intent["safety_pause_reason"] if dangerous_intent["pause_recommended"] else None
+    if effective_pause_required:
         risk_score += 2
 
-    if risk_score >= 7 or pause_required or emotional_distress:
+    if risk_score >= 7 or effective_pause_required or emotional_distress:
         supporter_priority = "high"
     elif risk_score >= 4:
         supporter_priority = "medium"
@@ -445,11 +685,14 @@ def _decision_risk_signals(
         supporter_priority = "low"
 
     supporter_flag_required = bool(
-        pause_required
+        effective_pause_required
         or (
             decision_intent
             and supporter_priority in {"high", "medium"}
             and (urgency_level != "low" or repeated_intent or can_afford is False)
+        )
+        or (
+            dangerous_intent["detected"] and dangerous_intent["safety_confidence"] in {"medium", "high"}
         )
     )
 
@@ -468,8 +711,11 @@ def _decision_risk_signals(
         risk_tags.append("repeated_decision_loop")
     if emotional_distress:
         risk_tags.append("emotional_distress")
+    if dangerous_intent["detected"]:
+        risk_tags.append(f"safety_{dangerous_intent['safety_category']}")
+        risk_tags.append(f"safety_confidence_{dangerous_intent['safety_confidence']}")
 
-    if pause_required:
+    if effective_pause_required:
         recommended_action = "pause_and_review"
     elif supporter_priority == "high":
         recommended_action = "urgent_supporter_checkin"
@@ -488,6 +734,16 @@ def _decision_risk_signals(
         "risk_score": risk_score,
         "risk_tags": risk_tags,
         "recommended_action": recommended_action,
+        "safety_detected": dangerous_intent["detected"],
+        "safety_category": dangerous_intent["safety_category"],
+        "safety_label": dangerous_intent["safety_label"],
+        "safety_confidence": dangerous_intent["safety_confidence"],
+        "safety_pause_reason": dangerous_intent["safety_pause_reason"],
+        "safety_calming_template_key": dangerous_intent["safety_calming_template_key"],
+        "safety_language_variant": dangerous_intent["safety_language_variant"],
+        "safety_evidence": dangerous_intent["safety_evidence"],
+        "pause_required_override": effective_pause_required,
+        "pause_reason_override": effective_pause_reason,
     }
 
 
@@ -607,7 +863,12 @@ def _build_messages(history_english: list[dict], user_english: str, financial_co
     # Keep context window focused and cheap.
     tail = history_english[-16:]
     for item in tail:
-        role = item.get("role", "user")
+        role = str(item.get("role", "user") or "user").strip().lower()
+        if role == "supporter":
+            # Supporter notes in user chat should be treated as assistant context for OpenAI.
+            role = "assistant"
+        elif role not in {"user", "assistant", "system", "developer", "tool", "function"}:
+            role = "user"
         text = item.get("english_text", "").strip()
         if not text:
             continue
@@ -711,6 +972,19 @@ def generate_finance_chat_reply(
         pause_required=pause_required,
     )
 
+    if bool(decision_signals.get("pause_required_override")) and not pause_required:
+        pause_required = True
+        pause_reason = str(decision_signals.get("pause_reason_override") or "safety_review")
+
+    if pause_required and pause_reason and pause_reason.startswith("safety_"):
+        pause_prompt = None
+        if not suggested_supporter_message:
+            safety_label = str(decision_signals.get("safety_label") or "a safety concern")
+            suggested_supporter_message = (
+                "Safety pause triggered: the user message indicates "
+                f"{safety_label}. Please review and decide whether chat can continue."
+            )
+
     completion = client.chat.completions.create(
         model=model,
         temperature=0.2,
@@ -761,5 +1035,13 @@ def generate_finance_chat_reply(
         "risk_score": decision_signals["risk_score"],
         "risk_tags": decision_signals["risk_tags"],
         "recommended_action": decision_signals["recommended_action"],
+        "safety_detected": decision_signals["safety_detected"],
+        "safety_category": decision_signals["safety_category"],
+        "safety_label": decision_signals["safety_label"],
+        "safety_confidence": decision_signals["safety_confidence"],
+        "safety_pause_reason": decision_signals["safety_pause_reason"],
+        "safety_calming_template_key": decision_signals["safety_calming_template_key"],
+        "safety_language_variant": decision_signals["safety_language_variant"],
+        "safety_evidence": decision_signals["safety_evidence"],
         "generated_at": datetime.utcnow().isoformat(),
     }

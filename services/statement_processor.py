@@ -252,10 +252,15 @@ def _normalize_amount(amount_str: str) -> str:
     Normalize an amount string to a decimal format.
     Handles currency symbols and various formats.
     """
-    if not amount_str or isinstance(amount_str, (int, float)):
+    if amount_str is None:
         return "0.00"
+
+    if isinstance(amount_str, (int, float)):
+        return f"{float(amount_str):.2f}"
     
     amount_str = str(amount_str).strip()
+    if amount_str == "":
+        return "0.00"
     
     # Remove currency symbols and whitespace
     amount_str = amount_str.replace("R", "").replace("$", "").replace(",", "").strip()

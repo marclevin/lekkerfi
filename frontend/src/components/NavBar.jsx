@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
-export default function NavBar() {
+export default function NavBar({ showReadAloudIcon = false, onOpenReadAloud }) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
 
@@ -20,6 +20,19 @@ export default function NavBar() {
 
       {user && (
         <div className="navbar-actions">
+          {showReadAloudIcon && (
+            <button
+              type="button"
+              className="navbar-help-icon"
+              onClick={onOpenReadAloud}
+              aria-label="Open read aloud"
+              title="Read aloud"
+            >
+              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true">
+                <path d="M9 1a1 1 0 00-1.6-.8L4.3 3.5H2a1 1 0 00-1 1v7a1 1 0 001 1h2.3l3.1 2.3A1 1 0 009 14V1zM11.5 4.5a.5.5 0 01.5.5v6a.5.5 0 01-1 0V5a.5.5 0 01.5-.5zM13.5 2.5a.5.5 0 01.5.5v10a.5.5 0 01-1 0V3a.5.5 0 01.5-.5z"/>
+              </svg>
+            </button>
+          )}
           {!isSupporter && (
             <>
               <Link to="/profile" className="user-avatar" title={`${user.email} — Edit profile`} aria-label="Open profile settings">

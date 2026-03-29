@@ -1,5 +1,6 @@
 import json
-from datetime import date, timedelta
+import random
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
@@ -12,7 +13,7 @@ from services.accessible_insights import generate_accessible_carousel
 from services.combine import combine_transactions
 from services.insights_visualizer import FinancialInsightsVisualizer
 from services.simplify import simplify
-from services.translate import translate
+from services.translate import translate, translate_text
 
 insights_bp = Blueprint("insights", __name__)
 
@@ -30,11 +31,62 @@ def _fmt_money(value: Decimal) -> str:
     return f"R{value:,.2f}"
 
 
+_NO_DATA_WINS = [
+    "You showed up for your money today — that is the first step.",
+    "Checking in on your money is already a win. Well done.",
+    "We are ready to track your spending together. That counts.",
+    "Opening this app means you care about your money. Keep going.",
+    "You are building a good habit just by being here.",
+]
+
+_POSITIVE_FLOW_WINS = [
+    "More money came in than went out. That is a good result.",
+    "You finished this period with money to spare. Great work.",
+    "Your balance grew this period. You are moving in the right direction.",
+    "Income was higher than spending. That is exactly what we want.",
+]
+
+_NEGATIVE_FLOW_WINS = [
+    "You tracked every rand — now we can plan smarter next time.",
+    "Knowing where money went is step one. You did that.",
+    "Every rand is accounted for. That is progress.",
+    "You stayed aware of your spending, and that is a real win.",
+]
+
+_SPEND_WINS = [
+    "You kept an eye on your spending this period. That takes effort.",
+    "Tracking spending is how you stay in control. Well done.",
+    "You reviewed your spending and that helps you plan ahead.",
+]
+
+_LOW_FEE_WINS = [
+    "Most of your transactions had very low fees. That is a great habit.",
+    "You kept bank fees low this period. Every rand saved matters.",
+    "Low fees mean more money stays with you. Keep it up.",
+]
+
+_HIGH_FEE_WINS = [
+    "Bank fees added up this period. Worth watching next time.",
+    "There is room to lower bank fees. Small changes add up.",
+]
+
+_TX_COUNT_WINS = [
+    "You made {n} transactions this period — you are actively managing your money.",
+    "Tracking {n} transactions takes effort. You did it.",
+    "{n} transactions reviewed. You are staying on top of things.",
+]
+
+_FALLBACK_WINS = [
+    "You stayed engaged with your money. That is always a win.",
+    "Checking in regularly is what makes the difference. Keep going.",
+    "You are building good money habits, one check-in at a time.",
+]
+
+
 def _weekly_win_payload(raw_transactions: str | None) -> dict:
     if not raw_transactions:
         return {
-            "wins": ["We linked your profile and we are ready for the next money check-in."],
-            "share_text": "Weekly Win: We are ready to track our spending together this week.",
+            "wins": [random.choice(_NO_DATA_WINS)],
         }
 
     combined = json.loads(raw_transactions)
@@ -44,7 +96,7 @@ def _weekly_win_payload(raw_transactions: str | None) -> dict:
     income = Decimal("0")
     fee_total = Decimal("0")
     tx_count = 0
-    low_fee_days = 0
+    low_fee_count = 0
 
     for acc in accounts:
         for trx in acc.get("transactions", []):
@@ -57,29 +109,40 @@ def _weekly_win_payload(raw_transactions: str | None) -> dict:
                 income += amount
             fee_total += abs(fee)
             if abs(fee) <= Decimal("5"):
-                low_fee_days += 1
+                low_fee_count += 1
 
     net = income - spend
     wins: list[str] = []
+
+    # Flow result
     if net >= 0:
-        wins.append(f"We kept a positive money flow of {_fmt_money(net)} in this period.")
+        wins.append(random.choice(_POSITIVE_FLOW_WINS))
     else:
-        wins.append("We tracked where money is going, so we can make a stronger plan next week.")
+        wins.append(random.choice(_NEGATIVE_FLOW_WINS))
 
+    # Spending awareness
     if spend > 0:
-        wins.append(f"We reviewed {_fmt_money(spend)} of spending, which helps us plan with confidence.")
+        wins.append(random.choice(_SPEND_WINS))
 
-    if fee_total > 0:
-        wins.append(f"We kept total bank fees to {_fmt_money(fee_total)} and can aim to lower that next week.")
+    # Fee habit
+    if fee_total > 0 and tx_count > 0:
+        low_fee_ratio = low_fee_count / tx_count
+        if low_fee_ratio >= 0.7:
+            wins.append(random.choice(_LOW_FEE_WINS))
+        elif fee_total > Decimal("50"):
+            wins.append(random.choice(_HIGH_FEE_WINS))
 
-    if tx_count > 0 and low_fee_days / tx_count >= 0.7:
-        wins.append("Most of our transactions had very low fees, which is a great habit.")
+    # Transaction count milestone
+    if tx_count >= 5:
+        wins.append(random.choice(_TX_COUNT_WINS).format(n=tx_count))
 
     if not wins:
-        wins.append("We stayed engaged with our money this week, and that is a real win.")
+        wins.append(random.choice(_FALLBACK_WINS))
 
-    share_text = "Weekly Win:\n- " + "\n- ".join(wins[:3])
-    return {"wins": wins[:4], "share_text": share_text}
+    # Shuffle so the displayed first win varies
+    random.shuffle(wins)
+
+    return {"wins": wins[:4]}
 
 
 @insights_bp.post("/generate")
@@ -98,6 +161,7 @@ def generate_insight():
 
     selected_accounts = data.get("selected_accounts", [])
     language = data.get("language", "xhosa").strip()
+    force_refresh = bool(data.get("force_refresh", False))
 
     if not selected_accounts:
         return jsonify({"error": "selected_accounts is required"}), 400
@@ -107,6 +171,34 @@ def generate_insight():
 
     db = SessionLocal()
     try:
+        # Return cached insight if one exists for the same accounts within 6 hours
+        if not force_refresh:
+            cutoff = datetime.utcnow() - timedelta(hours=6)
+            accounts_key = json.dumps(sorted(selected_accounts))
+            recent = (
+                db.query(Insight)
+                .filter(
+                    Insight.user_id == user_id,
+                    Insight.selected_accounts == accounts_key,
+                    Insight.created_at >= cutoff,
+                )
+                .order_by(Insight.created_at.desc())
+                .first()
+            )
+            if recent:
+                translation = next(
+                    (t for t in recent.translations if t.language == language), None
+                )
+                return jsonify({
+                    "insight_id": recent.id,
+                    "accounts": selected_accounts,
+                    "period": {"from": from_date, "to": to_date},
+                    "simplified": recent.simplified_text,
+                    "translated": translation.translated_text if translation else recent.simplified_text,
+                    "language": language,
+                    "created_at": recent.created_at.isoformat(),
+                    "cached": True,
+                }), 200
         # Fresh token — one-time consent TrxHistory doesn't need a long-lived session
         token = client.get_oauth_token()
 
@@ -348,6 +440,52 @@ def _build_visualization_result(insight_id: int, insight: Insight) -> dict:
     return result
 
 
+def _build_accessible_cards_result(
+    *,
+    insight_id: int,
+    language: str,
+    simplified_text: str,
+    viz_result: dict,
+) -> dict:
+    """Build or retrieve accessibility cards from process cache."""
+    accessible_cache: dict = current_app.config.get("ACCESSIBLE_INSIGHTS_CACHE", {})
+    cache_key = f"{insight_id}:{language}"
+    visualizations = viz_result.get("visualizations", [])
+    summary = viz_result.get("summary", {})
+
+    payload_fingerprint = json.dumps(
+        {
+            "simplified_text": simplified_text,
+            "visualizations": visualizations,
+            "summary": summary,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+    cached_entry = accessible_cache.get(cache_key)
+    if (
+        isinstance(cached_entry, dict)
+        and cached_entry.get("fingerprint") == payload_fingerprint
+        and isinstance(cached_entry.get("payload"), dict)
+    ):
+        return cached_entry["payload"]
+
+    cards = generate_accessible_carousel(
+        simplified_text=simplified_text,
+        visualizations=visualizations,
+        summary=summary,
+        language=language,
+    )
+
+    accessible_cache[cache_key] = {
+        "fingerprint": payload_fingerprint,
+        "payload": cards,
+    }
+    current_app.config["ACCESSIBLE_INSIGHTS_CACHE"] = accessible_cache
+    return cards
+
+
 @insights_bp.post("/<int:insight_id>/translate")
 @jwt_required()
 def translate_insight(insight_id: int):
@@ -415,11 +553,11 @@ def accessible_insight_cards(insight_id: int):
         language = requested_language or (preferred_language or "english")
 
         viz_result = _build_visualization_result(insight_id=insight_id, insight=insight)
-        cards = generate_accessible_carousel(
-            simplified_text=cast(str | None, insight.simplified_text) or "",
-            visualizations=viz_result.get("visualizations", []),
-            summary=viz_result.get("summary", {}),
+        cards = _build_accessible_cards_result(
+            insight_id=insight_id,
             language=str(language),
+            simplified_text=cast(str | None, insight.simplified_text) or "",
+            viz_result=viz_result,
         )
 
         return jsonify({
@@ -434,3 +572,28 @@ def accessible_insight_cards(insight_id: int):
         return jsonify({"error": str(exc)}), 500
     finally:
         db.close()
+
+
+@insights_bp.post("/translate-message")
+@jwt_required()
+def translate_message():
+    """
+    Translate a single free-form message into a target language.
+    Body: { "text": "...", "target_language": "xhosa" }
+    Returns: { "translated": "..." }
+    """
+    data = request.get_json() or {}
+    text = (data.get("text") or "").strip()
+    target_language = (data.get("target_language") or "english").strip().lower()
+
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+
+    if target_language == "english":
+        return jsonify({"translated": text})
+
+    try:
+        translated = translate_text(text, target_language)
+        return jsonify({"translated": translated})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

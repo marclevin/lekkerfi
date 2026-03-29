@@ -42,6 +42,7 @@ def create_app() -> Flask:
     app.config["JWT_SECRET_KEY"] = _get_jwt_secret()
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=30)
     app.config["VIZ_CACHE"] = {}
+    app.config["ACCESSIBLE_INSIGHTS_CACHE"] = {}
     app.config["AUTH_ASSIST_TICKETS"] = {}
     JWTManager(app)
 

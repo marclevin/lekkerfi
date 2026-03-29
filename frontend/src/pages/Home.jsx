@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   getNotifications, getWeeklyWin, listInsights, listMySuporters,
-  listMyUsers, markNotificationRead, sendNotification, visualizeInsight,
+  listMyUsers, listStatements, markNotificationRead, sendNotification, translateMessage, visualizeInsight,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { activateCalmAutoMode, readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,24 +75,12 @@ function NudgeBanner({ userId }) {
 // ── Weekly win (compact strip) ────────────────────────────────────────────────
 
 function WeeklyWinSection({ weeklyWin }) {
-  const [copied, setCopied] = useState(false)
-
-  async function handleCopy() {
-    if (!weeklyWin?.share_text) return
-    await navigator.clipboard.writeText(weeklyWin.share_text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1800)
-  }
-
   if (!weeklyWin?.wins?.length) return null
 
   return (
     <div className="weekly-win-strip" role="status" aria-label="Weekly win">
       <span className="weekly-win-strip-icon" aria-hidden="true">🏆</span>
       <p className="weekly-win-strip-text">{weeklyWin.wins[0]}</p>
-      <button className="weekly-win-strip-btn" onClick={handleCopy} aria-label="Share weekly win">
-        {copied ? '✓' : 'Share'}
-      </button>
     </div>
   )
 }
@@ -135,13 +124,28 @@ function ActionBanner({ hasInsights, isSupporter, onConnect, onInsights, onChat 
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
 
-function StatCard({ amount, name, desc, type, icon }) {
+function StatCard({ amount, name, desc, tip, type, icon }) {
+  const [showTip, setShowTip] = useState(false)
   return (
     <div className={`stat-card${type ? ` stat-card-${type}` : ''}`}>
       <span className="stat-card-icon" aria-hidden="true">{icon}</span>
       <span className="stat-card-amount">{amount}</span>
       <span className="stat-card-name">{name}</span>
       <span className="stat-card-desc">{desc}</span>
+      {tip && (
+        <button
+          type="button"
+          className="stat-card-tip-btn"
+          aria-expanded={showTip}
+          onClick={() => setShowTip((v) => !v)}
+          aria-label={showTip ? 'Hide explanation' : 'What does this mean?'}
+        >
+          {showTip ? 'Hide ▲' : 'What does this mean? ▼'}
+        </button>
+      )}
+      {tip && showTip && (
+        <p className="stat-card-tip" role="note">{tip}</p>
+      )}
     </div>
   )
 }
@@ -158,45 +162,69 @@ function FinancialSnapshot({ latestInsight, summary, vizLoading, onViewAll }) {
   }
   if (!summary) return null
 
+  const netFlow = Number(summary.net_flow ?? 0)
+  const isPositive = netFlow >= 0
+
   return (
     <section className="snapshot-section card">
       <div className="snapshot-header">
         <div>
           <h2 className="snapshot-title">Your money at a glance</h2>
-          {latestInsight && <p className="snapshot-sub">{fmtDate(latestInsight.created_at)}</p>}
+          {latestInsight && <p className="snapshot-sub">Based on data from {fmtDate(latestInsight.created_at)}</p>}
         </div>
         <button className="btn btn-ghost btn-sm" onClick={onViewAll}>Full view →</button>
       </div>
+
+      {/* Plain-language summary sentence */}
+      <div className="snapshot-summary-banner" role="status" aria-live="polite">
+        <span className="snapshot-summary-icon" aria-hidden="true">{isPositive ? '✅' : '⚠️'}</span>
+        <p className="snapshot-summary-text">
+          {isPositive
+            ? `You had ${fmt(netFlow)} more coming in than going out. That is a good result.`
+            : `You spent ${fmt(Math.abs(netFlow))} more than came in. This is worth looking at.`}
+        </p>
+      </div>
+
       <div className="stat-cards-grid">
         <StatCard
           amount={fmt(summary.total_income)}
-          name="Money in"
-          desc="Came into your account"
+          name="Money that came in"
+          desc="Salary, grants, or other payments received"
+          tip="This is all the money that arrived in your account — like your pay, a grant, or money someone sent you."
           type="positive"
           icon="⬇️"
         />
         <StatCard
           amount={fmt(summary.total_expenses)}
-          name="Money out"
-          desc="What you spent"
+          name="Money that went out"
+          desc="Shops, bills, and payments you made"
+          tip="This is everything you paid for — food, transport, bills, and anything else bought or paid."
           type="negative"
           icon="⬆️"
         />
         <StatCard
-          amount={fmt(summary.net_flow)}
-          name="Left over"
-          desc={summary.net_flow >= 0 ? 'More came in than went out' : 'More went out than came in'}
-          type={summary.net_flow >= 0 ? 'positive' : 'negative'}
-          icon={summary.net_flow >= 0 ? '✅' : '⚠️'}
+          amount={fmt(netFlow)}
+          name={isPositive ? 'You kept this much' : 'You went over by'}
+          desc={isPositive ? 'More came in than went out — well done' : 'More went out than came in this period'}
+          tip={isPositive
+            ? 'The difference between what came in and what went out. Positive means you are managing well.'
+            : 'You spent more than you received this period. Looking at your full summary can help you find where to adjust.'}
+          type={isPositive ? 'positive' : 'negative'}
+          icon={isPositive ? '✅' : '⚠️'}
         />
         <StatCard
           amount={fmt(summary.account_balance)}
-          name="Balance now"
-          desc="Your account right now"
+          name="Your balance right now"
+          desc="How much is in your account today"
+          tip="This is the current amount sitting in your account at the time we last checked."
           type=""
           icon="💳"
         />
       </div>
+
+      <button className="btn btn-secondary btn-sm snapshot-explain-btn" onClick={onViewAll}>
+        📊 See the full breakdown
+      </button>
     </section>
   )
 }
@@ -216,9 +244,10 @@ function whatsappUrl(phone) {
 
 // ── Supporter hub card ────────────────────────────────────────────────────────
 
-function SupporterCard({ supporter, notifs, onNewNotif }) {
+function SupporterCard({ supporter, notifs, onNewNotif, preferredLanguage }) {
   const [msg, setMsg] = useState('')
   const [sending, setSending] = useState(false)
+  const [translations, setTranslations] = useState({}) // notif.id → translated text
   const inputRef = useRef(null)
   const feedEndRef = useRef(null)
   const contactType = detectContactType(supporter.contact)
@@ -228,6 +257,24 @@ function SupporterCard({ supporter, notifs, onNewNotif }) {
   const messages = [...notifs]
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
     .slice(-10)
+
+  // Auto-translate incoming supporter messages if user language ≠ english
+  useEffect(() => {
+    if (!preferredLanguage || preferredLanguage === 'english') return
+    const toTranslate = messages.filter(
+      (n) => !n.is_mine && !translations[n.id]
+    )
+    toTranslate.forEach((n) => {
+      translateMessage(n.message, preferredLanguage)
+        .then((d) => {
+          if (d.translated && d.translated !== n.message) {
+            setTranslations((prev) => ({ ...prev, [n.id]: d.translated }))
+          }
+        })
+        .catch(() => {})
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifs.length, preferredLanguage])
 
   const newFromSupporter = notifs.filter((n) => !n.is_mine && !n.read).length
 
@@ -333,20 +380,27 @@ function SupporterCard({ supporter, notifs, onNewNotif }) {
               No messages yet. Send {supporter.display_name} a message below.
             </p>
           ) : (
-            messages.map((n) => (
-              <div
-                key={n.id}
-                className={`sc-bubble${n.is_mine ? ' sc-bubble-mine' : ' sc-bubble-theirs'}${!n.is_mine && !n.read ? ' sc-bubble-unread' : ''}`}
-              >
-                {!n.is_mine && (
-                  <span className="sc-bubble-from">{n.from_name}</span>
-                )}
-                <p className="sc-bubble-text">{n.message}</p>
-                {!n.is_mine && !n.read && (
-                  <span className="sc-bubble-new-dot" aria-label="New message">NEW</span>
-                )}
-              </div>
-            ))
+            messages.map((n) => {
+              const displayText = (!n.is_mine && translations[n.id]) ? translations[n.id] : n.message
+              const wasTranslated = !n.is_mine && !!translations[n.id]
+              return (
+                <div
+                  key={n.id}
+                  className={`sc-bubble${n.is_mine ? ' sc-bubble-mine' : ' sc-bubble-theirs'}${!n.is_mine && !n.read ? ' sc-bubble-unread' : ''}`}
+                >
+                  {!n.is_mine && (
+                    <span className="sc-bubble-from">{n.from_name}</span>
+                  )}
+                  <p className="sc-bubble-text">{displayText}</p>
+                  {wasTranslated && (
+                    <span className="sc-bubble-translated" aria-label="Translated message">Translated</span>
+                  )}
+                  {!n.is_mine && !n.read && (
+                    <span className="sc-bubble-new-dot" aria-label="New message">NEW</span>
+                  )}
+                </div>
+              )
+            })
           )}
           <div ref={feedEndRef} />
         </div>
@@ -381,7 +435,7 @@ function SupporterCard({ supporter, notifs, onNewNotif }) {
 
 // ── Support Hub section ───────────────────────────────────────────────────────
 
-function SupportCircle({ userId }) {
+function SupportCircle({ userId, preferredLanguage }) {
   const navigate = useNavigate()
   const [supporters, setSupporters] = useState(null)
   const [notifications, setNotifications] = useState([])
@@ -448,8 +502,75 @@ function SupportCircle({ userId }) {
           supporter={s}
           notifs={notifsFor(s.linked_supporter_id)}
           onNewNotif={handleNewNotif}
+          preferredLanguage={preferredLanguage}
         />
       ))}
+    </section>
+  )
+}
+
+function CalmEssentialsPanel({ onChat }) {
+  return (
+    <section className="card calm-essentials-panel" aria-label="Essentials card">
+      <div className="tax-shield-head">
+        <div>
+          <p className="section-label">Essentials</p>
+          <h2 className="tax-shield-title">Essentials card</h2>
+        </div>
+        <span className="status-badge status-info">Prototype</span>
+      </div>
+      <p className="calm-essentials-copy">Focus on these categories first.</p>
+      <div className="calm-essentials-list" role="list" aria-label="Essential categories">
+        <span role="listitem">🏠 Rent and housing</span>
+        <span role="listitem">🍳 Food and groceries</span>
+        <span role="listitem">🚌 Transport and fuel</span>
+      </div>
+      <div className="action-banner-btns">
+        <button className="btn btn-primary" onClick={onChat}>
+          💬 Ask about essentials
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function TaxShieldSection() {
+  const mockCards = [
+    {
+      title: 'Unused subscriptions',
+      value: 'R 389.00 / month',
+      note: 'You have services that look inactive. Review before the next billing cycle.',
+    },
+    {
+      title: 'Expected grant date',
+      value: '02 Apr 2026',
+      note: 'Set a reminder 1 day before so key expenses are planned in advance.',
+    },
+    {
+      title: 'Forgotten renewals',
+      value: '2 upcoming',
+      note: 'Insurance and utility renewals are due soon. Keep these ahead of impulse spending.',
+    },
+  ]
+
+  return (
+    <section className="card tax-shield-section" aria-label="Reminder dashboard">
+      <div className="tax-shield-head">
+        <div>
+          <p className="section-label">Reminder Dashboard</p>
+          <h2 className="tax-shield-title">Helpful reminders dashboard</h2>
+        </div>
+        <span className="status-badge status-info">Prototype</span>
+      </div>
+      <div className="tax-shield-grid">
+        {mockCards.map((card) => (
+          <article key={card.title} className="tax-shield-card">
+            <p className="tax-shield-label">{card.title}</p>
+            <p className="tax-shield-value">{card.value}</p>
+            <p className="tax-shield-note">{card.note}</p>
+          </article>
+        ))}
+      </div>
     </section>
   )
 }
@@ -465,6 +586,13 @@ export default function Home() {
   const [vizLoading, setVizLoading] = useState(false)
   const [weeklyWin, setWeeklyWin] = useState(null)
   const [managedUsers, setManagedUsers] = useState(null)
+  const [hasPendingStatement, setHasPendingStatement] = useState(false)
+  const [activeHomeTab, setActiveHomeTab] = useState('overview')
+  const [isCalmMode, setIsCalmMode] = useState(() => {
+    const fromBody = document.body.classList.contains('calm-mode')
+    const fromStorage = readStoredBoolean(CALM_MODE_KEY, false)
+    return fromBody || fromStorage
+  })
   const isSupporter = user?.role === 'supporter'
 
   useEffect(() => {
@@ -498,6 +626,42 @@ export default function Home() {
       .catch(() => setManagedUsers([]))
   }, [isSupporter])
 
+  useEffect(() => {
+    if (isSupporter) return
+    listStatements()
+      .then((d) => setHasPendingStatement((d.statements || []).some((s) => s.status === 'processing')))
+      .catch(() => {})
+  }, [isSupporter])
+
+  useEffect(() => {
+    return subscribeCalmModeChanges((snapshot) => {
+      const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
+      setIsCalmMode(Boolean(active))
+      if (active) setActiveHomeTab('hub')
+    })
+  }, [])
+
+  useEffect(() => {
+    if (isSupporter || !viz?.summary) return
+    const summary = viz.summary
+    const spend24h = Number(summary.spend_24h ?? summary.spending_24h ?? 0)
+    const avgDaily7d = Number(summary.avg_daily_spend_7d ?? summary.daily_avg_7d ?? 0)
+    const totalIncome = Number(summary.total_income ?? 0)
+    const totalExpenses = Number(summary.total_expenses ?? 0)
+    const netFlow = Number(summary.net_flow ?? 0)
+
+    const cadenceAnomaly = spend24h > 0 && avgDaily7d > 0 && spend24h >= avgDaily7d * 1.5
+    const ratioAnomaly = totalIncome > 0 && totalExpenses >= totalIncome * 1.1
+    const deepNegative = netFlow <= -300
+
+    if (cadenceAnomaly || ratioAnomaly || deepNegative) {
+      activateCalmAutoMode({
+        reason: 'spending_pattern_anomaly',
+        source: 'spending_anomaly',
+      })
+    }
+  }, [isSupporter, viz?.summary])
+
   const firstName = user?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || ''
   const hasInsights = !!latestInsight
 
@@ -513,19 +677,87 @@ export default function Home() {
       </header>
 
       {/* ── Caretaker messages ── */}
-      {!isSupporter && <NudgeBanner userId={user?.id} />}
+      {!isSupporter && !isCalmMode && <NudgeBanner userId={user?.id} />}
+
+      {/* ── Processing statement banner ── */}
+      {!isSupporter && hasPendingStatement && (
+        <div className="callout callout-info" style={{ margin: '0 0 12px' }}>
+          <span className="callout-icon">⏳</span>
+          <div className="callout-body">
+            <strong>Your statement is being analysed in the background.</strong>
+            <p>Head to <button className="link-btn" onClick={() => navigate('/insights')}>Insights</button> in a moment to see your results.</p>
+          </div>
+        </div>
+      )}
 
       {/* ── Weekly wins (near top, prominent) ── */}
-      {!isSupporter && <WeeklyWinSection weeklyWin={weeklyWin} />}
+      {!isSupporter && !isCalmMode && <WeeklyWinSection weeklyWin={weeklyWin} />}
 
       {/* ── What to do now (compact) ── */}
-      <ActionBanner
-        hasInsights={hasInsights}
-        isSupporter={isSupporter}
-        onConnect={() => navigate('/connect')}
-        onInsights={() => navigate('/insights')}
-        onChat={() => navigate('/chat')}
-      />
+      {!isCalmMode && (
+        <ActionBanner
+          hasInsights={hasInsights}
+          isSupporter={isSupporter}
+          onConnect={() => navigate('/connect')}
+          onInsights={() => navigate('/insights')}
+          onChat={() => navigate('/chat')}
+        />
+      )}
+
+      {!isSupporter && (
+        <div className="home-tab-strip" role="tablist" aria-label="Home sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHomeTab === 'overview'}
+            className={`home-tab-btn${activeHomeTab === 'overview' ? ' active' : ''}`}
+            onClick={() => setActiveHomeTab('overview')}
+          >
+            {isCalmMode ? 'Essentials' : 'Overview'}
+          </button>
+          {isCalmMode ? (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHomeTab === 'shield'}
+            className={`home-tab-btn${activeHomeTab === 'shield' ? ' active' : ''}`}
+            onClick={() => setActiveHomeTab('shield')}
+          >
+            Important Reminder
+          </button>
+          ) : (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHomeTab === 'glance'}
+            className={`home-tab-btn${activeHomeTab === 'glance' ? ' active' : ''}`}
+            onClick={() => setActiveHomeTab('glance')}
+          >
+            Money at a glance
+          </button>
+          )}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHomeTab === 'hub'}
+            className={`home-tab-btn${activeHomeTab === 'hub' ? ' active' : ''}`}
+            onClick={() => setActiveHomeTab('hub')}
+          >
+            {isCalmMode ? 'Support Hub' : 'Supporter hub'}
+          </button>
+          {!isCalmMode && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHomeTab === 'shield'}
+            className={`home-tab-btn${activeHomeTab === 'shield' ? ' active' : ''}`}
+            onClick={() => setActiveHomeTab('shield')}
+          >
+            Helpful reminders
+          </button>
+          )}
+        </div>
+      )}
 
       {/* ── Supporter: managed users ── */}
       {isSupporter && (
@@ -578,7 +810,7 @@ export default function Home() {
       )}
 
       {/* ── No insights yet ── */}
-      {insights?.length === 0 && !isSupporter && (
+      {insights?.length === 0 && !isSupporter && activeHomeTab === 'overview' && !isCalmMode && (
         <div className="home-onboarding">
           <p className="section-label">How it works</p>
           <div className="hiw-grid">
@@ -605,7 +837,7 @@ export default function Home() {
       )}
 
       {/* ── Financial snapshot (stats only) ── */}
-      {hasInsights && (
+      {hasInsights && (!isSupporter ? (!isCalmMode && activeHomeTab === 'overview') : true) && (
         <FinancialSnapshot
           latestInsight={latestInsight}
           summary={viz?.summary}
@@ -614,8 +846,38 @@ export default function Home() {
         />
       )}
 
+      {!isSupporter && !isCalmMode && activeHomeTab === 'glance' && (
+        hasInsights ? (
+          <FinancialSnapshot
+            latestInsight={latestInsight}
+            summary={viz?.summary}
+            vizLoading={vizLoading}
+            onViewAll={() => navigate('/insights')}
+          />
+        ) : (
+          <section className="card empty-state">
+            <p>No money snapshot yet. Add your bank data to unlock your glance view.</p>
+            <button className="btn btn-primary btn-sm" onClick={() => navigate('/connect')}>Add bank data</button>
+          </section>
+        )
+      )}
+
       {/* ── Support circle ── */}
-      {!isSupporter && <SupportCircle userId={user?.id} />}
+      {!isSupporter && isCalmMode && activeHomeTab === 'overview' && (
+        <CalmEssentialsPanel
+          onChat={() => navigate('/chat?prefill=Help me focus on rent, food, and transport only. Give me one safe step for today.&autosend=1')}
+        />
+      )}
+      {!isSupporter && isCalmMode && activeHomeTab === 'shield' && <TaxShieldSection />}
+      {!isSupporter && isCalmMode && activeHomeTab === 'hub' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
+      {!isSupporter && !isCalmMode && activeHomeTab === 'overview' && (
+        <CalmEssentialsPanel
+          onChat={() => navigate('/chat?prefill=Help me focus on rent, food, and transport only. Give me one safe step for today.&autosend=1')}
+        />
+      )}
+      {!isSupporter && !isCalmMode && activeHomeTab === 'overview' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
+      {!isSupporter && !isCalmMode && activeHomeTab === 'hub' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
+      {!isSupporter && !isCalmMode && activeHomeTab === 'shield' && <TaxShieldSection />}
     </div>
   )
 }

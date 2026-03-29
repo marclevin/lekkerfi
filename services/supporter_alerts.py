@@ -40,6 +40,11 @@ def _build_alert_candidates(coach_signals: dict) -> list[dict]:
     urgency_level = str(coach_signals.get("urgency_level") or "low")
     recommended_action = coach_signals.get("recommended_action")
     risk_tags = coach_signals.get("risk_tags") or []
+    safety_detected = bool(coach_signals.get("safety_detected"))
+    safety_category = coach_signals.get("safety_category")
+    safety_confidence = str(coach_signals.get("safety_confidence") or "none")
+    safety_label = coach_signals.get("safety_label")
+    safety_evidence = coach_signals.get("safety_evidence") or []
 
     if runout:
         alerts.append({
@@ -100,6 +105,11 @@ def _build_alert_candidates(coach_signals: dict) -> list[dict]:
         elif supporter_priority == "medium":
             severity = "warning"
 
+        if safety_detected and safety_confidence == "high":
+            severity = "critical"
+        elif safety_detected and safety_confidence == "medium" and severity == "info":
+            severity = "warning"
+
         alerts.append({
             "alert_type": "decision_support",
             "severity": severity,
@@ -109,7 +119,15 @@ def _build_alert_candidates(coach_signals: dict) -> list[dict]:
                 "risk_score": risk_score,
                 "risk_tags": risk_tags,
                 "recommended_action": recommended_action,
-                "message": "Dynamic decision risk detected. Supporter review is recommended.",
+                "safety_category": safety_category,
+                "safety_confidence": safety_confidence,
+                "safety_label": safety_label,
+                "safety_evidence": safety_evidence,
+                "message": (
+                    "Dangerous intent detected. Supporter review is required."
+                    if safety_detected
+                    else "Dynamic decision risk detected. Supporter review is recommended."
+                ),
             },
         })
 
@@ -165,6 +183,14 @@ def create_supporter_alerts(db, user_id: int, coach_signals: dict) -> list[int]:
                 "risk_score": coach_signals.get("risk_score"),
                 "risk_tags": coach_signals.get("risk_tags") or [],
                 "recommended_action": coach_signals.get("recommended_action"),
+                "safety_detected": coach_signals.get("safety_detected"),
+                "safety_category": coach_signals.get("safety_category"),
+                "safety_label": coach_signals.get("safety_label"),
+                "safety_confidence": coach_signals.get("safety_confidence"),
+                "safety_pause_reason": coach_signals.get("safety_pause_reason"),
+                "safety_calming_template_key": coach_signals.get("safety_calming_template_key"),
+                "safety_language_variant": coach_signals.get("safety_language_variant"),
+                "safety_evidence": coach_signals.get("safety_evidence") or [],
                 "trigger_user_message": coach_signals.get("trigger_user_message"),
                 "trigger_user_english": coach_signals.get("trigger_user_english"),
                 "trigger_assistant_english": coach_signals.get("trigger_assistant_english"),
@@ -176,6 +202,7 @@ def create_supporter_alerts(db, user_id: int, coach_signals: dict) -> list[int]:
                 "user_message": coach_signals.get("trigger_user_message"),
                 "user_message_english": coach_signals.get("trigger_user_english"),
                 "assistant_response_english": coach_signals.get("trigger_assistant_english"),
+                "evidence": (coach_signals.get("safety_evidence") or [])[:3],
             }
 
             alert = SupporterAlert(

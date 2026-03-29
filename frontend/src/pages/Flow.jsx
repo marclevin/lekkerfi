@@ -8,6 +8,7 @@ import {
   startSession,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 import {
   ensureAccountTags,
   friendlyAccountList,
@@ -294,8 +295,24 @@ function StepSurecheck({ sessionData, onDone }) {
                   <span className="callout-icon">⏳</span>
                   <div className="callout-body">No SureChecks found yet. Refresh in a few seconds.</div>
                 </div>
-              ) : (
-                surechecks.map((sc) => (
+              ) : (() => {
+                // Only show Sent (Unaccepted) and Accepted; hide Rejected
+                const visible = surechecks.filter((sc) => sc.status === 'Unaccepted' || sc.status === 'Accepted')
+                // If multiple Sent, keep only the most recent one
+                const sentItems = visible.filter((sc) => sc.status === 'Unaccepted')
+                const acceptedItems = visible.filter((sc) => sc.status === 'Accepted')
+                const displayList = [...(sentItems.length > 0 ? [sentItems[0]] : []), ...acceptedItems]
+
+                if (displayList.length === 0) {
+                  return (
+                    <div className="callout callout-tip">
+                      <span className="callout-icon">⏳</span>
+                      <div className="callout-body">No SureChecks found yet. Refresh in a few seconds.</div>
+                    </div>
+                  )
+                }
+
+                return displayList.map((sc) => (
                   <div key={sc.absaReference} className="surecheck-item">
                     <div className="surecheck-info">
                       <span className="surecheck-ref">{sc.absaReference}</span>
@@ -326,7 +343,7 @@ function StepSurecheck({ sessionData, onDone }) {
                     </div>
                   </div>
                 ))
-              )}
+              })()}
             </div>
           )}
         </>
@@ -336,6 +353,15 @@ function StepSurecheck({ sessionData, onDone }) {
 }
 
 // ── Step 3: Select Accounts ───────────────────────────────────────────────────
+
+function fmtBalance(raw) {
+  if (raw == null || raw === '' || raw === '—') return '—'
+  // Strip any existing R/currency prefix and commas, then reformat
+  const clean = String(raw).replace(/[R\s,]/g, '').trim()
+  const num = parseFloat(clean)
+  if (isNaN(num)) return String(raw)
+  return `R\u00A0${num.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
 
 function StepAccounts({ onDone }) {
   const [accounts, setAccounts] = useState(null)
@@ -357,10 +383,29 @@ function StepAccounts({ onDone }) {
       const accountKeys = nextAccounts
         .map((acc) => normalizeAccountKey(acc.accountNumber || acc.account_number))
         .filter(Boolean)
-      const ensured = ensureAccountTags(accountTags, accountKeys)
-      if (ensured.changed) {
+
+      // Seed tags with the actual account name from ABSA if no tag saved yet
+      const existingTags = readAccountTags()
+      const merged = { ...existingTags }
+      let changed = false
+      nextAccounts.forEach((acc) => {
+        const key = normalizeAccountKey(acc.accountNumber || acc.account_number)
+        if (!key) return
+        if (!String(merged[key] || '').trim()) {
+          const apiName = acc.productName || acc.name || acc.accountType || acc.account_type
+          if (apiName) {
+            merged[key] = apiName
+            changed = true
+          }
+        }
+      })
+
+      const ensured = ensureAccountTags(merged, accountKeys)
+      if (ensured.changed || changed) {
         setAccountTags(ensured.tags)
         writeAccountTags(ensured.tags)
+      } else {
+        setAccountTags(merged)
       }
     } catch (err) {
       setError(err.message)
@@ -447,19 +492,19 @@ function StepAccounts({ onDone }) {
                       aria-label={`Use ${tagName} for summary`}
                     />
                     <div className="account-details">
-                      <label className="account-tag-label" htmlFor={inputId}>Simple name</label>
+                      <label className="account-tag-label" htmlFor={inputId}>Account name</label>
                       <input
                         id={inputId}
                         className="input account-tag-input"
                         value={tagName}
                         onChange={(e) => handleTagChange(num, e.target.value, index)}
                         onClick={(e) => e.stopPropagation()}
-                        placeholder={friendlyAccountName(num, {}, index)}
+                        placeholder={type || friendlyAccountName(num, {}, index)}
                       />
                       <span className="account-num">{maskAccountReference(num)}</span>
                       {type && <span className="account-type">{type}</span>}
                     </div>
-                    <span className="account-balance">R {balance}</span>
+                    <span className="account-balance">{fmtBalance(balance)}</span>
                   </div>
                 )
               })}
@@ -554,23 +599,13 @@ export default function Flow() {
   const [sessionData, setSessionData] = useState(null)
   const [insight, setInsight] = useState(null)
   const [flowMessage, setFlowMessage] = useState('')
-  const [calmMode, setCalmMode] = useState(() => {
-    try {
-      return localStorage.getItem('lekkerfi_calm_mode') === 'true'
-    } catch {
-      return false
-    }
-  })
+  const [calmMode, setCalmMode] = useState(() => readStoredBoolean(CALM_MODE_KEY, false))
 
   useEffect(() => {
-    function onStorage(e) {
-      if (e.key === 'lekkerfi_calm_mode') {
-        setCalmMode(e.newValue === 'true')
-      }
-    }
-
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    return subscribeCalmModeChanges((snapshot) => {
+      const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
+      setCalmMode(Boolean(active))
+    })
   }, [])
 
   return (
@@ -583,17 +618,8 @@ export default function Flow() {
         <p>Follow these simple steps to connect your bank and get a clear money summary.</p>
       </div>
 
-      {calmMode && (
-        <div className="callout callout-info" style={{ marginBottom: '0.75rem' }}>
-          <span className="callout-icon">🧭</span>
-          <div className="callout-body">
-            Calm mode is on. Focus on one step at a time. Use Continue on each step.
-          </div>
-        </div>
-      )}
-
-      <StepIndicator current={step} />
-      {flowMessage && (
+      {!calmMode && <StepIndicator current={step} />}
+      {!calmMode && flowMessage && (
         <div className="callout callout-success" style={{ margin: '0.9rem 0' }} role="status" aria-live="polite">
           <span className="callout-icon">✅</span>
           <div className="callout-body">{flowMessage}</div>

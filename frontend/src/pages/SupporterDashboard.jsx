@@ -967,13 +967,13 @@ export default function SupporterDashboard() {
                       <section className="supporter-care-section">
                         <h3>Upload Statement</h3>
                         <p className="muted">
-                          Upload a bank statement on behalf of {selectedUser.full_name.split(' ')[0]}.
+                          Upload and store a bank statement on behalf of {selectedUser.full_name.split(' ')[0]}.
                         </p>
                         {uploadResult === 'done' ? (
                           <div className="callout callout-success" style={{ marginTop: 10 }}>
                             <span className="callout-icon">✅</span>
                             <div className="callout-body">
-                              Statement uploaded and analysed.
+                              Statement uploaded and saved. Analysis was not started.
                               <button
                                 className="btn btn-ghost btn-sm"
                                 style={{ marginLeft: 8 }}
@@ -1016,7 +1016,7 @@ export default function SupporterDashboard() {
                             </button>
                             <div className="supporter-upload-controls">
                               <label className="supporter-upload-lang-label">
-                                Language
+                                Preferred analysis language (optional)
                                 <select
                                   value={uploadLanguage}
                                   onChange={(e) => setUploadLanguage(e.target.value)}
@@ -1031,7 +1031,7 @@ export default function SupporterDashboard() {
                                 onClick={handleSupporterUpload}
                                 disabled={!uploadFile || uploading}
                               >
-                                {uploading ? 'Uploading…' : 'Upload & Analyse'}
+                                {uploading ? 'Uploading statement…' : 'Upload statement only'}
                               </button>
                             </div>
                           </>

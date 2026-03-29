@@ -18,6 +18,7 @@ from db.models import (
     Statement,
     SupporterAlert,
     SupporterChatMessage,
+    SupporterLinkRequest,
     SupporterNote,
     SupporterNotification,
     Translation,
@@ -281,6 +282,14 @@ def _alert_payload_with_db(alert: SupporterAlert, db=None) -> dict:
 
     overdue = _alert_overdue_payload(alert)
     chat_context = _resolve_chat_context_for_alert(alert, metadata, db)
+    coach = metadata.get("coach_signals") if isinstance(metadata.get("coach_signals"), dict) else {}
+    safety = {
+        "detected": bool(coach.get("safety_detected")),
+        "category": coach.get("safety_category"),
+        "label": coach.get("safety_label"),
+        "confidence": coach.get("safety_confidence"),
+        "evidence": coach.get("safety_evidence") or [],
+    }
 
     return {
         "id": alert.id,
@@ -294,6 +303,7 @@ def _alert_payload_with_db(alert: SupporterAlert, db=None) -> dict:
         "dismissed": alert.dismissed,
         "created_at": alert.created_at.isoformat(),
         "chat_context": chat_context,
+        "safety": safety,
         **overdue,
     }
 
@@ -990,6 +1000,22 @@ def add_supporter_note():
             updated_at=datetime.utcnow(),
         )
         db.add(note)
+
+        # Deliver note as a user-visible notice
+        supporter_obj = db.get(User, supporter_id)
+        supporter_name = (
+            (supporter_obj.full_name or supporter_obj.email.split("@")[0])
+            if supporter_obj
+            else "Your supporter"
+        )
+        preview = note_text[:200] + ("…" if len(note_text) > 200 else "")
+        notif = SupporterNotification(
+            from_user_id=supporter_id,
+            to_user_id=int(user_id),
+            message=f"📝 Note from {supporter_name}: {preview}",
+        )
+        db.add(notif)
+
         db.commit()
         db.refresh(note)
         return jsonify({
@@ -1282,7 +1308,7 @@ def supporter_upload_for_user(user_id: int):
     """
     Supporter uploads a bank statement on behalf of a linked user.
     Multipart form fields: file, language (optional, default english).
-    Creates the insight under the target user's account.
+    Stores the statement file only. No analysis is triggered here.
     """
     supporter_id = int(get_jwt_identity())
 
@@ -1318,67 +1344,323 @@ def supporter_upload_for_user(user_id: int):
             user_id=user_id,
             original_filename=original_name,
             file_path=file_path,
-            status="processing",
+            status="done",
         )
         db.add(stmt_record)
+        db.commit()
+
+        return jsonify({
+            "statement_id": stmt_record.id,
+            "language": language,
+            "status": "uploaded",
+            "message": "Statement uploaded successfully. Analysis was not started.",
+        }), 201
+
+    finally:
+        db.close()
+
+
+# ── Supporter view of user's finance chat ────────────────────────────────────
+
+@supporters_bp.get("/dashboard/users/<int:user_id>/finance-chat")
+@jwt_required()
+def get_user_finance_chat(user_id: int):
+    """Supporter reads the user's own finance chat messages (read-only system view)."""
+    supporter_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+        linked_user_ids = _linked_user_ids_for_supporter(db, supporter_id)
+        if user_id not in linked_user_ids:
+            return jsonify({"error": "Not linked to this user"}), 403
+
+        latest_session = (
+            db.query(FinanceChatSession)
+            .filter(FinanceChatSession.user_id == user_id)
+            .order_by(FinanceChatSession.updated_at.desc())
+            .first()
+        )
+        if not latest_session:
+            return jsonify({"messages": [], "session_id": None})
+
+        messages = (
+            db.query(FinanceChatMessage)
+            .filter_by(session_id=latest_session.id)
+            .order_by(FinanceChatMessage.created_at.asc())
+            .limit(60)
+            .all()
+        )
+        return jsonify({
+            "session_id": latest_session.id,
+            "is_paused": bool(latest_session.is_paused),
+            "messages": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "text": m.original_text,
+                    "english_text": m.english_text,
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in messages
+            ],
+        })
+    finally:
+        db.close()
+
+
+@supporters_bp.post("/dashboard/users/<int:user_id>/finance-chat/inject")
+@jwt_required()
+def inject_supporter_message(user_id: int):
+    """Supporter injects a message directly into the user's finance chat."""
+    supporter_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    message_text = (data.get("message") or "").strip()
+
+    if not message_text:
+        return jsonify({"error": "message is required"}), 400
+
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+        linked_user_ids = _linked_user_ids_for_supporter(db, supporter_id)
+        if user_id not in linked_user_ids:
+            return jsonify({"error": "Not linked to this user"}), 403
+
+        latest_session = (
+            db.query(FinanceChatSession)
+            .filter(FinanceChatSession.user_id == user_id)
+            .order_by(FinanceChatSession.updated_at.desc())
+            .first()
+        )
+        if not latest_session:
+            return jsonify({"error": "User has no active chat session"}), 404
+
+        supporter = db.get(User, supporter_id)
+        supporter_name = (
+            (supporter.full_name or supporter.email.split("@")[0]) if supporter else "Your supporter"
+        )
+        prefixed = f"[{supporter_name}]: {message_text}"
+
+        msg = FinanceChatMessage(
+            session_id=latest_session.id,
+            role="supporter",
+            language="english",
+            original_text=prefixed,
+            english_text=prefixed,
+        )
+        db.add(msg)
+
+        # Also send as notification so user sees it
+        notif = SupporterNotification(
+            from_user_id=supporter_id,
+            to_user_id=user_id,
+            message=f"💬 Message in your chat from {supporter_name}: {message_text[:200]}",
+        )
+        db.add(notif)
+        db.commit()
+        db.refresh(msg)
+
+        return jsonify({
+            "message": {
+                "id": msg.id,
+                "role": msg.role,
+                "text": msg.original_text,
+                "created_at": msg.created_at.isoformat(),
+            }
+        }), 201
+    finally:
+        db.close()
+
+
+# ── Supporter-initiated link requests ─────────────────────────────────────────
+
+@supporters_bp.get("/search-users")
+@jwt_required()
+def search_users_for_supporter():
+    """Supporter searches for an existing regular user by email to request a link."""
+    supporter_id = int(get_jwt_identity())
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 3:
+        return jsonify({"users": []})
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+
+        already_linked = _linked_user_ids_for_supporter(db, supporter_id)
+        results = (
+            db.query(User)
+            .filter(
+                User.role == "user",
+                or_(
+                    User.full_name.ilike(f"%{q}%"),
+                    User.email.ilike(f"%{q}%"),
+                ),
+            )
+            .limit(10)
+            .all()
+        )
+        return jsonify({
+            "users": [
+                {
+                    "id": u.id,
+                    "display_name": u.full_name or u.email.split("@")[0],
+                    "email": u.email,
+                    "already_linked": u.id in already_linked,
+                }
+                for u in results
+            ]
+        })
+    finally:
+        db.close()
+
+
+@supporters_bp.post("/link-requests")
+@jwt_required()
+def send_link_request():
+    """Supporter sends a link request to a specific user."""
+    supporter_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+
+        target = db.get(User, int(user_id))
+        if not target or target.role != "user":
+            return jsonify({"error": "User not found"}), 404
+
+        already_linked = _linked_user_ids_for_supporter(db, supporter_id)
+        if int(user_id) in already_linked:
+            return jsonify({"error": "Already linked to this user"}), 409
+
+        existing = (
+            db.query(SupporterLinkRequest)
+            .filter_by(supporter_id=supporter_id, user_id=int(user_id), status="pending")
+            .first()
+        )
+        if existing:
+            return jsonify({"error": "A pending request already exists for this user"}), 409
+
+        link_req = SupporterLinkRequest(
+            supporter_id=supporter_id,
+            user_id=int(user_id),
+            status="pending",
+        )
+        db.add(link_req)
         db.flush()
 
-        try:
-            trx_response = process_statement(file_path)
-            combined = combine_transactions([trx_response])
-            simplified_text = simplify_statement(combined)
-            translated_text = translate_statement(simplified_text, language)
+        supporter = db.get(User, supporter_id)
+        supporter_name = (
+            (supporter.full_name or supporter.email.split("@")[0]) if supporter else "A supporter"
+        )
+        notif = SupporterNotification(
+            from_user_id=supporter_id,
+            to_user_id=int(user_id),
+            message=(
+                f"🤝 {supporter_name} has requested to be your trusted supporter. "
+                "Go to Profile → Support Circle to approve or decline."
+            ),
+        )
+        db.add(notif)
+        db.commit()
+        db.refresh(link_req)
 
-            th = trx_response.get("transactionHistory", {})
-            account_label = th.get("fromAccountName") or original_name
+        return jsonify({
+            "request_id": link_req.id,
+            "status": link_req.status,
+            "message": f"Request sent to {target.full_name or target.email}.",
+        }), 201
+    finally:
+        db.close()
 
-            insight = Insight(
+
+@supporters_bp.get("/link-requests/incoming")
+@jwt_required()
+def get_incoming_link_requests():
+    """User retrieves pending link requests directed at them."""
+    user_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        pending = (
+            db.query(SupporterLinkRequest)
+            .filter_by(user_id=user_id, status="pending")
+            .order_by(SupporterLinkRequest.created_at.desc())
+            .all()
+        )
+        result = []
+        for r in pending:
+            supporter = db.get(User, r.supporter_id)
+            result.append({
+                "id": r.id,
+                "supporter_id": r.supporter_id,
+                "supporter_name": (supporter.full_name or supporter.email.split("@")[0]) if supporter else "Unknown",
+                "supporter_email": supporter.email if supporter else "",
+                "status": r.status,
+                "created_at": r.created_at.isoformat(),
+            })
+        return jsonify({"requests": result})
+    finally:
+        db.close()
+
+
+@supporters_bp.post("/link-requests/<int:request_id>/respond")
+@jwt_required()
+def respond_link_request(request_id: int):
+    """User approves or declines a link request."""
+    user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    action = (data.get("action") or "").strip().lower()
+
+    if action not in {"approve", "decline"}:
+        return jsonify({"error": "action must be approve or decline"}), 400
+
+    db = SessionLocal()
+    try:
+        link_req = db.query(SupporterLinkRequest).filter_by(id=request_id, user_id=user_id).first()
+        if not link_req:
+            return jsonify({"error": "Request not found"}), 404
+        if link_req.status != "pending":
+            return jsonify({"error": "Request already handled"}), 409
+
+        supporter = db.get(User, link_req.supporter_id)
+        user = db.get(User, user_id)
+        user_name = (user.full_name or user.email.split("@")[0]) if user else "The user"
+        supporter_name = (
+            (supporter.full_name or supporter.email.split("@")[0]) if supporter else "The supporter"
+        )
+
+        if action == "approve":
+            link_req.status = "approved"
+            link_req.updated_at = datetime.utcnow()
+            us = UserSupporter(
                 user_id=user_id,
-                selected_accounts=json.dumps([account_label]),
-                raw_transactions=json.dumps(combined),
-                simplified_text=simplified_text,
+                linked_supporter_id=link_req.supporter_id,
+                display_name=supporter_name,
             )
-            db.add(insight)
-            db.flush()
-
-            translation = Translation(
-                insight_id=insight.id,
-                language=language,
-                translated_text=translated_text,
+            db.add(us)
+            notif = SupporterNotification(
+                from_user_id=user_id,
+                to_user_id=link_req.supporter_id,
+                message=f"✅ {user_name} approved your request to be their trusted supporter.",
             )
-            db.add(translation)
-
-            stmt_record.status = "done"
-            stmt_record.insight_id = insight.id
-
-            db.commit()
-            db.refresh(insight)
-
-            return jsonify({
-                "statement_id": stmt_record.id,
-                "insight_id": insight.id,
-                "accounts": [account_label],
-                "simplified": simplified_text,
-                "language": language,
-                "created_at": insight.created_at.isoformat(),
-            }), 201
-
-        except Exception as exc:
-            db.rollback()
-            db2 = SessionLocal()
-            try:
-                err_record = Statement(
-                    user_id=user_id,
-                    original_filename=original_name,
-                    file_path=file_path,
-                    status="error",
-                    error_message=str(exc)[:500],
-                )
-                db2.add(err_record)
-                db2.commit()
-            finally:
-                db2.close()
-            return jsonify({"error": str(exc)}), 500
-
+        else:
+            link_req.status = "declined"
+            link_req.updated_at = datetime.utcnow()
+            notif = SupporterNotification(
+                from_user_id=user_id,
+                to_user_id=link_req.supporter_id,
+                message=f"❌ {user_name} declined your supporter request.",
+            )
+        db.add(notif)
+        db.commit()
+        return jsonify({"status": link_req.status})
     finally:
         db.close()

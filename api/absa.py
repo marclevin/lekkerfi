@@ -6,7 +6,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from db.database import SessionLocal
-from db.models import AbsaSession, User
+from db.models import AbsaSession, SupporterNotification, User, UserSupporter
 
 absa_bp = Blueprint("absa", __name__)
 _RECENT_SURECHECK_HOURS = 48
@@ -323,5 +323,66 @@ def get_accounts():
         return jsonify({"accounts": payload.get("accounts", [])})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+
+@absa_bp.delete("/session/<int:session_id>")
+@jwt_required()
+def delete_absa_session(session_id: int):
+    """Revoke and delete an ABSA session for the current user. Notifies linked supporters."""
+    user_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        session_rec = db.query(AbsaSession).filter_by(id=session_id, user_id=user_id).first()
+        if not session_rec:
+            return jsonify({"error": "Session not found"}), 404
+
+        session_ref = session_rec.reference_number or str(session_id)
+        db.delete(session_rec)
+
+        # Notify all registered linked supporters
+        user = db.query(User).filter_by(id=user_id).first()
+        user_name = user.full_name or user.email if user else "Your user"
+        supporter_links = db.query(UserSupporter).filter_by(user_id=user_id).all()
+        for link in supporter_links:
+            if link.linked_supporter_id:
+                notif = SupporterNotification(
+                    from_user_id=user_id,
+                    to_user_id=link.linked_supporter_id,
+                    message=f"{user_name} removed their ABSA bank connection (ref: {session_ref}).",
+                )
+                db.add(notif)
+
+        db.commit()
+        return jsonify({"deleted": True})
+    finally:
+        db.close()
+
+
+@absa_bp.get("/sessions")
+@jwt_required()
+def list_absa_sessions():
+    """List all ABSA sessions for the current user, newest first."""
+    user_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        sessions = (
+            db.query(AbsaSession)
+            .filter_by(user_id=user_id)
+            .order_by(AbsaSession.created_at.desc())
+            .all()
+        )
+        return jsonify({
+            "sessions": [
+                {
+                    "id": s.id,
+                    "status": s.status,
+                    "reference_number": s.reference_number,
+                    "created_at": s.created_at.isoformat(),
+                }
+                for s in sessions
+            ]
+        })
     finally:
         db.close()

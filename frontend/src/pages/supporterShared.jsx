@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 
 export const LANGUAGES = [
   { value: 'xhosa', label: 'isiXhosa' },
@@ -87,8 +87,10 @@ export function computeUserSignals(selectedDetails) {
   const mgmt = selectedDetails.management || {}
   const transactions = selectedDetails.transactions || []
 
-  const spending7d = mgmt.spending_7d || 0
-  const avgDaily = mgmt.avg_daily_spend_30d || 0
+  const spending7d = Number(mgmt.spending_7d || 0)
+  const spending30d = Number(mgmt.spending_30d || 0)
+  const avgDailyRaw = Number(mgmt.avg_daily_spend_30d || 0)
+  const avgDaily = avgDailyRaw > 0 ? avgDailyRaw : (spending30d > 0 ? spending30d / 30 : 0)
   const expected7d = avgDaily * 7
   let velocity
   if (avgDaily === 0) {
@@ -97,16 +99,27 @@ export function computeUserSignals(selectedDetails) {
       label: 'Spending Velocity',
       value: 'No baseline yet',
       desc: 'Upload a statement to start tracking spending pace.',
+      detail: null,
     }
   } else {
     const ratio = expected7d > 0 ? spending7d / expected7d : 0
     const pct = Math.round(ratio * 100)
+    const overBy = spending7d - expected7d
+    const detail = [
+      `7-day spend: ${formatMoney(spending7d)}`,
+      `Expected (30d avg × 7): ${formatMoney(expected7d)}`,
+      `Daily average (30d): ${formatMoney(avgDaily)}`,
+      overBy > 0
+        ? `Over baseline by ${formatMoney(overBy)} — check for large or unusual purchases`
+        : `Within baseline by ${formatMoney(Math.abs(overBy))}`,
+    ]
     if (ratio > 1.8) {
       velocity = {
         level: 'critical',
         label: 'Spending Velocity',
         value: `${pct}% of weekly baseline`,
         desc: `Spending ${Math.round((ratio - 1) * 100)}% faster than usual. Consider an immediate check-in.`,
+        detail,
       }
     } else if (ratio > 1.3) {
       velocity = {
@@ -114,6 +127,7 @@ export function computeUserSignals(selectedDetails) {
         label: 'Spending Velocity',
         value: `${pct}% of weekly baseline`,
         desc: 'Pace is elevated this week. Watch for stress spending or impulse triggers.',
+        detail,
       }
     } else {
       velocity = {
@@ -121,12 +135,14 @@ export function computeUserSignals(selectedDetails) {
         label: 'Spending Velocity',
         value: `${pct}% of weekly baseline`,
         desc: 'Spending is on track relative to the 30-day baseline.',
+        detail,
       }
     }
   }
 
   const lastSeen = mgmt.last_login_at || mgmt.last_chat_at
   const daysInactive = daysSince(lastSeen)
+  const lastLoginFormatted = lastSeen ? new Date(lastSeen).toLocaleString('en-ZA', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null
   let inactivity
   if (daysInactive === null) {
     inactivity = {
@@ -134,6 +150,7 @@ export function computeUserSignals(selectedDetails) {
       label: 'Inactivity',
       value: 'Never logged in',
       desc: 'User has not accessed the app yet. Direct outreach recommended.',
+      detail: ['No login recorded. Account may need setup help or direct contact.'],
     }
   } else if (daysInactive >= 14) {
     inactivity = {
@@ -141,6 +158,11 @@ export function computeUserSignals(selectedDetails) {
       label: 'Inactivity',
       value: `${daysInactive} days since login`,
       desc: 'Over two weeks without activity. Consider a welfare check.',
+      detail: [
+        `Last seen: ${lastLoginFormatted}`,
+        `Days since last activity: ${daysInactive}`,
+        'Suggested action: Direct phone or WhatsApp check-in.',
+      ],
     }
   } else if (daysInactive >= 7) {
     inactivity = {
@@ -148,6 +170,11 @@ export function computeUserSignals(selectedDetails) {
       label: 'Inactivity',
       value: `${daysInactive} days since login`,
       desc: 'A week without activity. A short check-in message may help.',
+      detail: [
+        `Last seen: ${lastLoginFormatted}`,
+        `Days since last activity: ${daysInactive}`,
+        'Suggested action: Send a supportive nudge message.',
+      ],
     }
   } else {
     inactivity = {
@@ -155,21 +182,30 @@ export function computeUserSignals(selectedDetails) {
       label: 'Inactivity',
       value: daysInactive === 0 ? 'Active today' : `Last seen ${daysInactive}d ago`,
       desc: 'User is regularly engaging with the app.',
+      detail: [`Last seen: ${lastLoginFormatted || 'recently'}`],
     }
   }
 
   const now = Date.now()
   const recentTx = transactions.filter((tx) => {
     if (!tx.date) return false
-    return (now - new Date(tx.date).getTime()) / (1000 * 60 * 60 * 24) <= 7
+    const parsed = new Date(tx.date).getTime()
+    if (Number.isNaN(parsed)) return false
+    return (now - parsed) / (1000 * 60 * 60 * 24) <= 7
   })
   const groups = {}
   for (const tx of recentTx) {
-    if (tx.amount >= 0) continue
-    const key = `${(tx.description || '').toLowerCase().trim().slice(0, 50)}|${Math.abs(tx.amount).toFixed(2)}`
-    groups[key] = (groups[key] || 0) + 1
+    const amount = Number(tx.amount || 0)
+    const key = `${(tx.description || '').toLowerCase().trim().slice(0, 50)}|${Math.abs(amount).toFixed(2)}`
+    if (!groups[key]) groups[key] = { count: 0, description: tx.description, amount: tx.amount }
+    groups[key].count += 1
   }
-  const dupPairs = Object.values(groups).filter((count) => count >= 2).length
+  const dupEntries = Object.values(groups).filter((g) => g.count >= 2)
+  const dupPairs = dupEntries.length
+  const dupDetail = dupEntries.map(
+    (g) => `"${g.description || 'Unknown'}" — ${formatMoney(Math.abs(g.amount))} × ${g.count}`
+  )
+
   let duplicates
   if (dupPairs >= 3) {
     duplicates = {
@@ -177,6 +213,7 @@ export function computeUserSignals(selectedDetails) {
       label: 'Duplicate Payments',
       value: `${dupPairs} repeat transactions`,
       desc: 'Multiple same-amount charges found this week. Review for accidental duplicates.',
+      detail: dupDetail.length ? dupDetail : null,
     }
   } else if (dupPairs >= 1) {
     duplicates = {
@@ -184,6 +221,7 @@ export function computeUserSignals(selectedDetails) {
       label: 'Duplicate Payments',
       value: `${dupPairs} possible repeat`,
       desc: 'A similar charge appeared more than once this week. Worth verifying.',
+      detail: dupDetail.length ? dupDetail : null,
     }
   } else {
     duplicates = {
@@ -191,6 +229,7 @@ export function computeUserSignals(selectedDetails) {
       label: 'Duplicate Payments',
       value: 'None detected',
       desc: 'No repeated transactions found in the last 7 days.',
+      detail: null,
     }
   }
 
@@ -288,9 +327,12 @@ export function computeAggregateSignals(users, alerts = []) {
 }
 
 export function SignalCard({ signal }) {
+  const [expanded, setExpanded] = useState(false)
   const iconMap = { ok: '✓', warn: '!', critical: '⚠' }
+  const hasDetail = Array.isArray(signal.detail) && signal.detail.length > 0
+
   return (
-    <div className={`signal-card signal-card-${signal.level}`}>
+    <div className={`signal-card signal-card-${signal.level}${expanded ? ' signal-card-expanded' : ''}`}>
       <div className="signal-card-header">
         <span className={`signal-card-icon signal-icon-${signal.level}`} aria-hidden="true">
           {iconMap[signal.level]}
@@ -299,6 +341,23 @@ export function SignalCard({ signal }) {
       </div>
       <p className="signal-card-value">{signal.value}</p>
       <p className="signal-card-desc">{signal.desc}</p>
+      {hasDetail && (
+        <button
+          type="button"
+          className="signal-card-expand-btn"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          {expanded ? 'Hide detail ▲' : 'See detail ▼'}
+        </button>
+      )}
+      {hasDetail && expanded && (
+        <ul className="signal-card-detail" aria-label="Signal detail">
+          {signal.detail.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

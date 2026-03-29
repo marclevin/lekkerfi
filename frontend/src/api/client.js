@@ -64,6 +64,25 @@ export function searchSupporters(q) {
   return request(`/supporters/search?q=${encodeURIComponent(q)}`)
 }
 
+export function searchUsersForSupporter(q) {
+  return request(`/supporters/search-users?q=${encodeURIComponent(q)}`)
+}
+
+export function sendLinkRequest(userId) {
+  return request('/supporters/link-requests', { method: 'POST', body: JSON.stringify({ user_id: userId }) })
+}
+
+export function getIncomingLinkRequests() {
+  return request('/supporters/link-requests/incoming')
+}
+
+export function respondLinkRequest(requestId, action) {
+  return request(`/supporters/link-requests/${requestId}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  })
+}
+
 export function listMySuporters() {
   return request('/supporters/mine')
 }
@@ -103,6 +122,17 @@ export function getSupporterDashboardUsers() {
 
 export function getSupporterUserDetails(userId) {
   return request(`/supporters/dashboard/users/${userId}/details`)
+}
+
+export function getUserFinanceChat(userId) {
+  return request(`/supporters/dashboard/users/${userId}/finance-chat`)
+}
+
+export function injectSupporterMessage(userId, message) {
+  return request(`/supporters/dashboard/users/${userId}/finance-chat/inject`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  })
 }
 
 export function dismissSupporterAlert(alertId) {
@@ -217,6 +247,22 @@ export function listStatements() {
   return request('/statements/')
 }
 
+export function getStatementStatus(id) {
+  return request(`/statements/${id}/status`)
+}
+
+export function deleteStatement(id) {
+  return request(`/statements/${id}`, { method: 'DELETE' })
+}
+
+export function listAbsaSessions() {
+  return request('/absa/sessions')
+}
+
+export function deleteAbsaSession(id) {
+  return request(`/absa/session/${id}`, { method: 'DELETE' })
+}
+
 // ── Insights ──────────────────────────────────────────────────────────────────
 
 export function generateInsight(selected_accounts, language) {
@@ -249,6 +295,13 @@ export function getWeeklyWin() {
   return request('/insights/weekly-win')
 }
 
+export function translateMessage(text, targetLanguage) {
+  return request('/insights/translate-message', {
+    method: 'POST',
+    body: JSON.stringify({ text, target_language: targetLanguage }),
+  })
+}
+
 export function getAccessibleInsight(id, language) {
   const params = new URLSearchParams()
   if (language) params.set('language', language)
@@ -278,5 +331,12 @@ export function sendChatMessage(sessionId, message, language, trustedSupporterNa
       language,
       trusted_supporter_name: trustedSupporterName || undefined,
     }),
+  })
+}
+
+export function logCalmAutoActivation(payload) {
+  return request('/chat/calm-auto-activation', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
   })
 }

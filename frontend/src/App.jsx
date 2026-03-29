@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import BottomNav from './components/BottomNav'
 import NavBar from './components/NavBar'
@@ -13,10 +13,25 @@ import Insights from './pages/Insights'
 import Login from './pages/Login'
 import Profile from './pages/Profile'
 import Register from './pages/Register'
+import SpendingLimits from './pages/SpendingLimits'
 import SupporterAlerts from './pages/SupporterAlerts'
+import SupporterBankingFlow from './pages/SupporterBankingFlow'
 import SupporterHome from './pages/SupporterHome'
+import SupporterUserPage from './pages/SupporterUserPage'
 import SupporterUsers from './pages/SupporterUsers'
 import Upload from './pages/Upload'
+import { logCalmAutoActivation } from './api/client'
+import {
+  readStoredBoolean,
+  subscribeCalmModeChanges,
+  writeCalmManualMode,
+  writeCalmManualOverride,
+  CALM_AUTO_MODE_KEY,
+  CALM_MODE_KEY,
+  CALM_OVERRIDE_KEY,
+  CALM_REASON_KEY,
+  CALM_SOURCE_KEY,
+} from './utils/calmMode'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -90,6 +105,14 @@ function getRouteCue(pathname) {
       speech: 'You are on money chat. Type one short question and send it.'
     }
   }
+  if (pathname === '/limits') {
+    return {
+      icon: '🛡️',
+      title: 'Spending limits',
+      hint: 'See the limits your supporter has set for you.',
+      speech: 'You are on spending limits. This page shows the daily, weekly, and monthly limits set by your trusted supporter.'
+    }
+  }
   if (pathname === '/history') {
     return {
       icon: '🕒',
@@ -142,29 +165,85 @@ export default function App() {
   const { user } = useAuth()
   const location = useLocation()
   const cue = getRouteCue(location.pathname)
-  const [calmMode, setCalmMode] = useState(() => {
-    try {
-      return localStorage.getItem('lekkerfi_calm_mode') === 'true'
-    } catch {
-      return false
-    }
+  const [calmMode, setCalmMode] = useState(() => readStoredBoolean(CALM_MODE_KEY, false))
+  const [calmAutoMode, setCalmAutoMode] = useState(() => readStoredBoolean(CALM_AUTO_MODE_KEY, false))
+  const [calmManualOverride, setCalmManualOverride] = useState(() => {
+    try { return sessionStorage.getItem(CALM_OVERRIDE_KEY) === 'true' } catch { return false }
+  })
+  const [calmReason, setCalmReason] = useState(() => {
+    try { return localStorage.getItem(CALM_REASON_KEY) || '' } catch { return '' }
+  })
+  const [calmSource, setCalmSource] = useState(() => {
+    try { return localStorage.getItem(CALM_SOURCE_KEY) || '' } catch { return '' }
   })
   const [speakingHelp, setSpeakingHelp] = useState(false)
-  const [pillDismissed, setPillDismissed] = useState(false)
+  const [pillDismissed, setPillDismissed] = useState(() => {
+    try { return localStorage.getItem('lekkerfi_pill_dismissed') === 'true' } catch { return false }
+  })
+  const prevAutoModeRef = useRef(calmAutoMode)
 
   useEffect(() => {
-    try {
-      localStorage.setItem('lekkerfi_calm_mode', String(calmMode))
-    } catch {}
-
     document.body.classList.toggle('calm-mode', calmMode)
   }, [calmMode])
+
+  useEffect(() => {
+    return subscribeCalmModeChanges((snapshot) => {
+      setCalmAutoMode(Boolean(snapshot.auto))
+      setCalmManualOverride(Boolean(snapshot.override))
+      setCalmReason(String(snapshot.reason || ''))
+      setCalmSource(String(snapshot.source || ''))
+      if (snapshot.override) {
+        setCalmMode(Boolean(snapshot.manual))
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    const isUser = user?.role === 'user'
+    const wasAuto = prevAutoModeRef.current
+    const isAuto = Boolean(calmAutoMode)
+    if (isUser && !wasAuto && isAuto) {
+      logCalmAutoActivation({
+        source: calmSource || 'chat_signal',
+        reason: calmReason || 'high_risk_signal',
+        route: location.pathname,
+      }).catch(() => {})
+    }
+    prevAutoModeRef.current = isAuto
+  }, [user?.role, calmAutoMode, calmSource, calmReason, location.pathname])
+
+  useEffect(() => {
+    const isUser = user?.role === 'user'
+    if (!isUser || calmManualOverride) return
+    setCalmMode(Boolean(calmAutoMode))
+    writeCalmManualMode(Boolean(calmAutoMode))
+  }, [user?.role, calmAutoMode, calmManualOverride])
+
+  function toggleCalmMode() {
+    const next = !calmMode
+    setCalmManualOverride(true)
+    setCalmMode(next)
+    writeCalmManualOverride(true)
+    writeCalmManualMode(next)
+  }
+
+  function dismissPill() {
+    window.speechSynthesis?.cancel()
+    setSpeakingHelp(false)
+    setPillDismissed(true)
+    try { localStorage.setItem('lekkerfi_pill_dismissed', 'true') } catch {}
+  }
+
+  function reopenPill() {
+    setPillDismissed(false)
+    try { localStorage.setItem('lekkerfi_pill_dismissed', 'false') } catch {}
+  }
 
   useEffect(() => {
     if (!('speechSynthesis' in window)) return
     window.speechSynthesis.cancel()
     setSpeakingHelp(false)
-    setPillDismissed(false)
+    // Do NOT reset pillDismissed here — it persists across navigation
   }, [location.pathname])
 
   function readPageHelp() {
@@ -187,15 +266,29 @@ export default function App() {
     window.speechSynthesis.speak(utterance)
   }
 
+  function calmBannerText(reason) {
+    const key = String(reason || '').toLowerCase()
+    if (key.includes('supporter')) return 'We simplified your screen because your supporter asked for a calmer flow.'
+    if (key.includes('cadence')) return 'We simplified your screen to slow things down and keep your next steps clear.'
+    if (key.includes('spending')) return 'We simplified your screen because your recent spending pattern looked high-risk.'
+    return 'We simplified your screen to help you focus on safer money steps.'
+  }
+
+  const showCalmAutoBanner = Boolean(user?.role === 'user' && calmMode && calmAutoMode && !calmManualOverride)
+
   return (
     <>
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <div id="app-status" className="sr-only" aria-live="polite" aria-atomic="true" />
-      <NavBar />
+      <NavBar
+        showReadAloudIcon={Boolean(user && pillDismissed)}
+        onOpenReadAloud={reopenPill}
+      />
       <main
         id="main-content"
         className={`main-content${user ? ' has-bottom-nav has-help-tab-space' : ''}${location.pathname === '/chat' ? ' chat-route' : ''}`}
         data-calm-mode={calmMode ? 'true' : 'false'}
+        data-user-role={user?.role || 'guest'}
       >
         <div className="route-cue" role="navigation" aria-label="Page guide">
           <span className="route-cue-icon" aria-hidden="true">{cue.icon}</span>
@@ -207,7 +300,7 @@ export default function App() {
             id="global-calm-mode"
             type="button"
             className={`route-cue-calm-btn${calmMode ? ' active' : ''}`}
-            onClick={() => setCalmMode((prev) => !prev)}
+            onClick={toggleCalmMode}
             aria-pressed={calmMode}
             aria-label={calmMode ? 'Calm mode on. Tap to turn off.' : 'Calm mode off. Tap to turn on.'}
           >
@@ -215,6 +308,12 @@ export default function App() {
             {calmMode ? 'Calm on' : 'Calm'}
           </button>
         </div>
+        {showCalmAutoBanner && (
+          <div className="calm-auto-banner" role="status" aria-live="polite">
+            <span className="calm-auto-banner-icon" aria-hidden="true">🌿</span>
+            <span className="calm-auto-banner-text">{calmBannerText(calmReason)}</span>
+          </div>
+        )}
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
@@ -225,25 +324,39 @@ export default function App() {
           <Route path="/insights" element={<ProtectedRoute allowedRoles={['user']}><Insights /></ProtectedRoute>} />
           <Route path="/chat"    element={<ProtectedRoute allowedRoles={['user']}><Chat /></ProtectedRoute>} />
           <Route path="/connect" element={<ProtectedRoute allowedRoles={['user']}><Connect /></ProtectedRoute>} />
+          <Route path="/limits"  element={<ProtectedRoute allowedRoles={['user']}><SpendingLimits /></ProtectedRoute>} />
           <Route path="/supporter" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterHome /></ProtectedRoute>} />
           <Route path="/supporter/users" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterUsers /></ProtectedRoute>} />
+          <Route path="/supporter/users/:userId" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterUserPage /></ProtectedRoute>} />
           <Route path="/supporter/alerts" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterAlerts /></ProtectedRoute>} />
+          <Route path="/supporter/users/:userId/banking" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterBankingFlow /></ProtectedRoute>} />
           <Route path="/history" element={<ProtectedRoute><History /></ProtectedRoute>} />
           <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-      {user && (
+      {user && pillDismissed && (
+        <button
+          type="button"
+          className="help-now-tab"
+          onClick={reopenPill}
+          aria-label="Open read aloud"
+          title="Read aloud"
+        >
+          <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+            <path d="M9 1a1 1 0 00-1.6-.8L4.3 3.5H2a1 1 0 00-1 1v7a1 1 0 001 1h2.3l3.1 2.3A1 1 0 009 14V1zM11.5 4.5a.5.5 0 01.5.5v6a.5.5 0 01-1 0V5a.5.5 0 01.5-.5zM13.5 2.5a.5.5 0 01.5.5v10a.5.5 0 01-1 0V3a.5.5 0 01.5-.5z"/>
+          </svg>
+        </button>
+      )}
+      {user && !pillDismissed && (
         <div
-          className={`help-now-wrap${speakingHelp ? ' speaking' : ''}${pillDismissed ? ' off-screen' : ''}`}
-          aria-hidden={pillDismissed ? 'true' : undefined}
+          className={`help-now-wrap${speakingHelp ? ' speaking' : ''}`}
         >
           <button
             type="button"
             className="help-now-btn"
             onClick={readPageHelp}
             aria-label={speakingHelp ? 'Stop reading aloud' : 'Read this page aloud'}
-            tabIndex={pillDismissed ? -1 : 0}
           >
             <span className="help-now-dot" aria-hidden="true">
               <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
@@ -255,9 +368,8 @@ export default function App() {
           <button
             type="button"
             className="help-now-dismiss"
-            onClick={() => { window.speechSynthesis?.cancel(); setSpeakingHelp(false); setPillDismissed(true) }}
+            onClick={dismissPill}
             aria-label="Hide read aloud button"
-            tabIndex={pillDismissed ? -1 : 0}
           >
             ×
           </button>

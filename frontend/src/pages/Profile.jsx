@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
-  addSupporter, listMySuporters, listMyUsers, registerUser,
-  removeSupporter, searchSupporters,
+  addSupporter, getIncomingLinkRequests, listMySuporters, listMyUsers, registerUser,
+  removeSupporter, respondLinkRequest, searchSupporters,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -257,6 +257,72 @@ function SupporterManager() {
           </div>
         </form>
       )}
+    </div>
+  )
+}
+
+// ── Pending link requests (for regular users) ─────────────────────────────────
+
+function LinkRequestsSection() {
+  const [requests, setRequests] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [responding, setResponding] = useState(null)
+  const [error, setError] = useState('')
+
+  function reload() {
+    setLoading(true)
+    getIncomingLinkRequests()
+      .then((d) => setRequests(d.requests || []))
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { reload() }, [])
+
+  async function handleRespond(id, action) {
+    setResponding(id)
+    try {
+      await respondLinkRequest(id, action)
+      reload()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setResponding(null)
+    }
+  }
+
+  if (loading) return <div className="page-center" style={{ minHeight: 60 }}><span className="spinner" /></div>
+  if (requests.length === 0) return null
+
+  return (
+    <div className="profile-section card link-requests-section">
+      <p className="section-label">Supporter Requests</p>
+      {error && <div className="alert alert-error">{error}</div>}
+      {requests.map((r) => (
+        <div key={r.id} className="link-request-row">
+          <div>
+            <strong>{r.supporter_name}</strong>
+            <span className="muted" style={{ marginLeft: 6, fontSize: '0.82rem' }}>{r.supporter_email}</span>
+            <p className="link-request-desc">wants to be your trusted supporter</p>
+          </div>
+          <div className="link-request-actions">
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => handleRespond(r.id, 'approve')}
+              disabled={responding === r.id}
+            >
+              {responding === r.id ? '…' : 'Approve'}
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => handleRespond(r.id, 'decline')}
+              disabled={responding === r.id}
+            >
+              Decline
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -545,10 +611,23 @@ export default function Profile() {
         </form>
       </Section>
 
+      {/* ── Pending link requests (regular users only) ── */}
+      {!isSupporter && <LinkRequestsSection />}
+
       {/* ── Support Circle (regular users only) ── */}
       {!isSupporter && (
         <Section title="Support Circle">
           <SupporterManager />
+        </Section>
+      )}
+
+      {/* ── Spending limits shortcut (regular users only) ── */}
+      {!isSupporter && (
+        <Section title="Spending Limits">
+          <p className="profile-section-desc">Your trusted supporter may have set daily, weekly, or monthly spending limits to help you stay on track.</p>
+          <Link to="/limits" className="btn btn-secondary btn-sm" style={{ marginTop: 8 }}>
+            View my spending limits
+          </Link>
         </Section>
       )}
 

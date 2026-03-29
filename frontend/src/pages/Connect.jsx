@@ -1,31 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 
 export default function Connect() {
   const navigate = useNavigate()
-  const [calmMode, setCalmMode] = useState(() => {
-    try {
-      return localStorage.getItem('lekkerfi_calm_mode') === 'true'
-    } catch {
-      return false
-    }
-  })
-  const [showAllOptions, setShowAllOptions] = useState(false)
+  const [calmMode, setCalmMode] = useState(() => readStoredBoolean(CALM_MODE_KEY, false))
 
   useEffect(() => {
-    function onStorage(e) {
-      if (e.key === 'lekkerfi_calm_mode') {
-        setCalmMode(e.newValue === 'true')
-      }
-    }
-
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    return subscribeCalmModeChanges((snapshot) => {
+      const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
+      setCalmMode(Boolean(active))
+    })
   }, [])
-
-  useEffect(() => {
-    if (calmMode) setShowAllOptions(false)
-  }, [calmMode])
 
   return (
     <div className="page">
@@ -63,7 +49,7 @@ export default function Connect() {
           </span>
         </button>
 
-        {(!calmMode || showAllOptions) && (
+        {!calmMode && (
           <button className="connect-card card" onClick={() => navigate('/upload')} aria-label="Upload a bank statement file">
             <div className="connect-card-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -93,11 +79,7 @@ export default function Connect() {
         )}
       </div>
 
-      {calmMode && !showAllOptions && (
-        <button className="btn btn-secondary btn-full" onClick={() => setShowAllOptions(true)} aria-label="Show more add-data options">
-          Show more options
-        </button>
-      )}
+      {calmMode && <p className="chat-calm-note">Calm mode keeps one next step here: connect ABSA.</p>}
     </div>
   )
 }

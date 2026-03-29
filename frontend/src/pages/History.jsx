@@ -1,15 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listInsights, listStatements } from '../api/client'
-import { friendlyAccountList, readAccountTags } from '../utils/accountTags'
-
-const LANGUAGES = [
-  { value: 'xhosa', label: 'isiXhosa' },
-  { value: 'zulu', label: 'isiZulu' },
-  { value: 'afrikaans', label: 'Afrikaans' },
-  { value: 'sotho', label: 'Sesotho' },
-  { value: 'english', label: 'English' },
-]
+import { deleteAbsaSession, deleteStatement, listAbsaSessions, listStatements } from '../api/client'
+import { readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-ZA', {
@@ -26,8 +18,8 @@ function StatusBadge({ status }) {
 
 function StatementHistory() {
   const navigate = useNavigate()
-  const accountTags = readAccountTags()
   const [statements, setStatements] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -35,6 +27,19 @@ function StatementHistory() {
       .then((d) => setStatements(d.statements || []))
       .catch((e) => setError(e.message))
   }, [])
+
+  async function handleDelete(id, filename) {
+    if (!window.confirm(`Remove "${filename}"? This will also delete its insight. Your supporter will be notified.`)) return
+    setDeletingId(id)
+    try {
+      await deleteStatement(id)
+      setStatements((prev) => prev.filter((s) => s.id !== id))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <section>
@@ -75,20 +80,22 @@ function StatementHistory() {
               <div className="history-item-body">
                 <span className="history-item-title">{stmt.original_filename}</span>
                 <span className="history-item-sub">{formatDate(stmt.created_at)}</span>
-                {stmt.insight?.accounts?.length > 0 && (
-                  <span className="history-item-sub">{friendlyAccountList(stmt.insight.accounts, accountTags, ', ')}</span>
-                )}
               </div>
               <div className="history-item-right">
                 <StatusBadge status={stmt.status} />
                 {stmt.status === 'done' && stmt.insight?.id && (
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => navigate('/insights')}
-                  >
+                  <button className="btn btn-ghost btn-sm" onClick={() => navigate('/insights')}>
                     View →
                   </button>
                 )}
+                <button
+                  className="btn btn-danger btn-sm"
+                  disabled={deletingId === stmt.id}
+                  onClick={() => handleDelete(stmt.id, stmt.original_filename)}
+                  aria-label={`Delete ${stmt.original_filename}`}
+                >
+                  {deletingId === stmt.id ? '…' : 'Delete'}
+                </button>
               </div>
             </div>
           ))}
@@ -102,18 +109,28 @@ function StatementHistory() {
 
 function AbsaHistory() {
   const navigate = useNavigate()
-  const accountTags = readAccountTags()
-  const [insights, setInsights] = useState(null)
+  const [sessions, setSessions] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    listInsights()
-      .then((d) => setInsights(d.insights || []))
+    listAbsaSessions()
+      .then((d) => setSessions(d.sessions || []))
       .catch((e) => setError(e.message))
   }, [])
 
-  // ABSA-generated insights are those that have accounts (they come from live bank data)
-  const absaInsights = insights?.filter((ins) => ins.accounts?.length > 0) ?? []
+  async function handleDelete(id) {
+    if (!window.confirm('Remove this ABSA connection? Your supporter will be notified.')) return
+    setDeletingId(id)
+    try {
+      await deleteAbsaSession(id)
+      setSessions((prev) => prev.filter((s) => s.id !== id))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <section>
@@ -126,13 +143,13 @@ function AbsaHistory() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {insights === null && (
+      {sessions === null && (
         <div className="page-center" style={{ minHeight: 60 }}>
           <div className="spinner" />
         </div>
       )}
 
-      {insights !== null && absaInsights.length === 0 && (
+      {sessions !== null && sessions.length === 0 && (
         <div className="empty-state">
           <p>No ABSA connections yet.</p>
           <button className="btn btn-secondary btn-sm" onClick={() => navigate('/flow')}>
@@ -141,10 +158,10 @@ function AbsaHistory() {
         </div>
       )}
 
-      {absaInsights.length > 0 && (
+      {sessions?.length > 0 && (
         <div className="statement-list">
-          {absaInsights.map((ins) => (
-            <div key={ins.id} className="history-item card">
+          {sessions.map((s) => (
+            <div key={s.id} className="history-item card">
               <div className="history-item-icon absa">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="5" width="20" height="14" rx="2" />
@@ -152,25 +169,21 @@ function AbsaHistory() {
                 </svg>
               </div>
               <div className="history-item-body">
-                <span className="history-item-title">{friendlyAccountList(ins.accounts, accountTags, ', ')}</span>
-                <span className="history-item-sub">{formatDate(ins.created_at)}</span>
-                {ins.translations?.length > 0 && (
-                  <span className="history-item-sub">
-                    {ins.translations.length} translation{ins.translations.length !== 1 ? 's' : ''}
-                    {' · '}
-                    {ins.translations.map((t) =>
-                      LANGUAGES.find((l) => l.value === t.language)?.label || t.language
-                    ).join(', ')}
-                  </span>
+                <span className="history-item-title">ABSA Connection</span>
+                <span className="history-item-sub">{formatDate(s.created_at)}</span>
+                {s.reference_number && (
+                  <span className="history-item-sub">Ref: {s.reference_number}</span>
                 )}
               </div>
               <div className="history-item-right">
-                <span className="badge badge-done">done</span>
+                <StatusBadge status={s.status} />
                 <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => navigate('/insights')}
+                  className="btn btn-danger btn-sm"
+                  disabled={deletingId === s.id}
+                  onClick={() => handleDelete(s.id)}
+                  aria-label="Remove ABSA connection"
                 >
-                  View →
+                  {deletingId === s.id ? '…' : 'Remove'}
                 </button>
               </div>
             </div>
@@ -184,6 +197,36 @@ function AbsaHistory() {
 // ── Main History page ──────────────────────────────────────────────────────────
 
 export default function History() {
+  const navigate = useNavigate()
+  const [calmMode, setCalmMode] = useState(() => readStoredBoolean(CALM_MODE_KEY, false))
+
+  useEffect(() => {
+    return subscribeCalmModeChanges((snapshot) => {
+      const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
+      setCalmMode(Boolean(active))
+    })
+  }, [])
+
+  if (calmMode) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <h1>History</h1>
+          <p>Calm mode keeps one simple next step.</p>
+        </div>
+        <section className="card calm-essentials-panel" aria-label="Calm mode history action">
+          <p className="calm-essentials-copy">Skip detailed history for now and focus on essentials support.</p>
+          <button
+            className="btn btn-primary"
+            onClick={() => navigate('/chat?prefill=Please help me with essentials only and one safe next step.&autosend=1')}
+          >
+            💬 Ask about essentials
+          </button>
+        </section>
+      </div>
+    )
+  }
+
   return (
     <div className="page">
       <div className="page-header">

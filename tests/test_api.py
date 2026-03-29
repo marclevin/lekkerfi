@@ -44,6 +44,14 @@ FAKE_REPLY = {
     "risk_score": 0,
     "risk_tags": [],
     "recommended_action": "continue_monitoring",
+    "safety_detected": False,
+    "safety_category": None,
+    "safety_label": None,
+    "safety_confidence": "none",
+    "safety_pause_reason": None,
+    "safety_calming_template_key": "general_pause",
+    "safety_language_variant": "standard",
+    "safety_evidence": [],
     "generated_at": "2026-03-28T00:00:00",
 }
 
@@ -377,6 +385,45 @@ class TestAccessibleInsights:
         _, kwargs = mock_generate_cards.call_args
         assert kwargs.get("language") == "afrikaans"
 
+    @patch("api.insights._build_visualization_result")
+    @patch("api.insights.generate_accessible_carousel")
+    def test_caches_accessible_cards_for_same_insight_and_language(
+        self, mock_generate_cards, mock_build_viz, client, insight, auth_header
+    ):
+        mock_build_viz.return_value = {
+            "summary": {"net_flow": 14001},
+            "visualizations": [
+                {
+                    "type": "spending_overview",
+                    "title": "Spending overview",
+                    "url": "/api/visualizations/spending.png",
+                }
+            ],
+        }
+        mock_generate_cards.return_value = {
+            "language": "english",
+            "intro": "We will go slowly.",
+            "cards": [
+                {
+                    "id": "spending_overview",
+                    "title": "Spending overview",
+                    "chart_type": "spending_overview",
+                    "chart_url": "/api/visualizations/spending.png",
+                    "headline": "One key pattern.",
+                    "explanation": "Simple explanation.",
+                    "what_to_do_now": "Take one step.",
+                    "chat_prompt": "Explain this in simple steps.",
+                }
+            ],
+        }
+
+        first = client.get(f"/api/insights/{insight.id}/accessible?language=english", headers=auth_header)
+        second = client.get(f"/api/insights/{insight.id}/accessible?language=english", headers=auth_header)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert mock_generate_cards.call_count == 1
+
 
 # ── Chat supporter name fallback ───────────────────────────────────────────────
 
@@ -443,6 +490,9 @@ class TestChatSupporterFallback:
         assert "supporter_flag_required" in signals
         assert "supporter_priority" in signals
         assert "risk_score" in signals
+        assert "safety_detected" in signals
+        assert "safety_category" in signals
+        assert "safety_confidence" in signals
 
 
 class TestChatPauseFlow:
@@ -582,6 +632,55 @@ class TestChatPauseFlow:
             metadata = json.loads(decision_alert.metadata_json or "{}")
             assert metadata.get("risk_score") == 7
             assert metadata.get("coach_signals", {}).get("supporter_priority") == "high"
+        finally:
+            db.close()
+
+    @patch("api.chat.generate_finance_chat_reply")
+    def test_safety_pause_sets_safety_payload(
+        self, mock_reply, client, user, auth_header, insight, chat_session
+    ):
+        mock_reply.return_value = {
+            **FAKE_REPLY,
+            "assistant_english": "We are pausing for safety.",
+            "assistant_user_language": "We are pausing for safety.",
+            "pause_required": True,
+            "pause_reason": "safety_weapons_purchase",
+            "decision_intent": True,
+            "supporter_flag_required": True,
+            "supporter_priority": "high",
+            "risk_score": 10,
+            "risk_tags": ["decision_intent", "safety_weapons_purchase"],
+            "recommended_action": "pause_and_review",
+            "safety_detected": True,
+            "safety_category": "weapons_purchase",
+            "safety_label": "weapon purchase intent",
+            "safety_confidence": "high",
+            "safety_pause_reason": "safety_weapons_purchase",
+            "safety_calming_template_key": "weapons_pause",
+            "safety_language_variant": "simplified",
+            "safety_evidence": ["buy a gun"],
+        }
+
+        resp = client.post(
+            f"/api/chat/sessions/{chat_session.id}/messages",
+            json={"message": "Can I buy a gun today?", "language": "english"},
+            headers=auth_header,
+        )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["chat_paused"] is True
+        assert data["pause_reason"] == "safety_weapons_purchase"
+        assert data["safety"]["detected"] is True
+        assert data["safety"]["category"] == "weapons_purchase"
+
+        db = SessionLocal()
+        try:
+            paused_session = db.get(type(chat_session), chat_session.id)
+            assert paused_session is not None
+            context = json.loads(paused_session.paused_context_json or "{}")
+            assert context.get("triggered_by") == "chat_safety"
+            assert context.get("safety", {}).get("category") == "weapons_purchase"
+            assert context.get("safety", {}).get("confidence") == "high"
         finally:
             db.close()
 

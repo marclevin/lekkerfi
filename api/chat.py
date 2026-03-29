@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from typing import cast
 
@@ -11,6 +12,7 @@ from services.finance_chat import generate_finance_chat_reply
 from services.supporter_alerts import create_supporter_alerts
 
 chat_bp = Blueprint("chat", __name__)
+_logger = logging.getLogger(__name__)
 
 
 def _session_payload(session: FinanceChatSession) -> dict:
@@ -163,11 +165,19 @@ def send_chat_message(session_id: int):
 
         if bool(cast(bool | None, session.is_paused)):
             paused_at = cast(datetime | None, session.paused_at)
+            paused_context = {}
+            context_raw = cast(str | None, session.paused_context_json)
+            if context_raw:
+                try:
+                    paused_context = json.loads(context_raw)
+                except json.JSONDecodeError:
+                    paused_context = {}
             return jsonify({
                 "error": "Chat is paused while your Trusted Supporter reviews your spending request.",
                 "chat_paused": True,
                 "pause_reason": session.paused_reason,
                 "paused_at": paused_at.isoformat() if paused_at is not None else None,
+                "safety": paused_context.get("safety") if isinstance(paused_context.get("safety"), dict) else None,
             }), 423
 
         insight = None
@@ -255,6 +265,14 @@ def send_chat_message(session_id: int):
             "risk_score": reply.get("risk_score", 0),
             "risk_tags": reply.get("risk_tags") or [],
             "recommended_action": reply.get("recommended_action"),
+            "safety_detected": bool(reply.get("safety_detected")),
+            "safety_category": reply.get("safety_category"),
+            "safety_label": reply.get("safety_label"),
+            "safety_confidence": reply.get("safety_confidence"),
+            "safety_pause_reason": reply.get("safety_pause_reason"),
+            "safety_calming_template_key": reply.get("safety_calming_template_key"),
+            "safety_language_variant": reply.get("safety_language_variant"),
+            "safety_evidence": reply.get("safety_evidence") or [],
             "trigger_user_message": message,
             "trigger_user_english": reply.get("user_english"),
             "trigger_assistant_english": reply.get("assistant_english"),
@@ -262,17 +280,29 @@ def send_chat_message(session_id: int):
             "triggered_user_message_id": user_message.id,
         }
 
+        safety_payload = {
+            "detected": bool(coach_signals.get("safety_detected")),
+            "category": coach_signals.get("safety_category"),
+            "label": coach_signals.get("safety_label"),
+            "confidence": coach_signals.get("safety_confidence"),
+            "pause_reason": coach_signals.get("safety_pause_reason"),
+            "calming_template_key": coach_signals.get("safety_calming_template_key"),
+            "language_variant": coach_signals.get("safety_language_variant"),
+            "evidence": coach_signals.get("safety_evidence") or [],
+        }
+
         if coach_signals["pause_required"]:
             session.is_paused = True  # type: ignore[assignment]
             session.paused_at = datetime.utcnow()  # type: ignore[assignment]
             session.paused_reason = cast(str | None, coach_signals.get("pause_reason"))  # type: ignore[assignment]
             session.paused_context_json = json.dumps({  # type: ignore[assignment]
-                "triggered_by": "chat_affordability",
+                "triggered_by": "chat_safety" if str(coach_signals.get("pause_reason") or "").startswith("safety_") else "chat_affordability",
                 "purchase_amount": coach_signals.get("purchase_amount"),
                 "safe_to_spend": coach_signals.get("safe_to_spend"),
                 "runout_before_payday": coach_signals.get("runout_before_payday"),
                 "days_to_payday": coach_signals.get("days_to_payday"),
                 "can_afford": coach_signals.get("can_afford"),
+                "safety": safety_payload,
             })
 
         created_alert_ids = []
@@ -292,6 +322,7 @@ def send_chat_message(session_id: int):
             "supporter_alert_ids": created_alert_ids,
             "chat_paused": bool(session.is_paused),
             "pause_reason": session.paused_reason,
+            "safety": safety_payload,
         }), 201
     except ValueError as exc:
         db.rollback()
@@ -301,3 +332,22 @@ def send_chat_message(session_id: int):
         return jsonify({"error": str(exc)}), 500
     finally:
         db.close()
+
+
+@chat_bp.post('/calm-auto-activation')
+@jwt_required()
+def log_calm_auto_activation():
+    """Log calm mode auto-activation events for tuning and audit."""
+    user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    source = str(data.get('source') or 'unknown').strip()[:64]
+    reason = str(data.get('reason') or 'unspecified').strip()[:128]
+    route = str(data.get('route') or '').strip()[:128]
+    _logger.info(
+        'calm_auto_activation user_id=%s source=%s reason=%s route=%s',
+        user_id,
+        source,
+        reason,
+        route,
+    )
+    return jsonify({'logged': True}), 201

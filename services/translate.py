@@ -101,8 +101,19 @@ def translate_text(text: str, target_language: str, model_repo: str = _MODEL_REP
 
 def translate_to_english(text: str, source_language: str, model_repo: str = _MODEL_REPO) -> str:
     """Translate free-form text from source language to English."""
-    return translate_text(
-        text=text,
-        target_language="English",
+    system_prompt = (
+        "You are a translator. Translate the message into English. "
+        "Return only the translated text. Do not add explanations, titles, or markdown formatting."
+    )
+    message = (
+        f"Source language: {source_language}\n"
+        "Target language: English\n\n"
+        "Translate the following text exactly with natural phrasing.\n\n"
+        f"{text}"
+    )
+    translated = _predict_translation(
+        message=message,
+        system_prompt=system_prompt,
         model_repo=model_repo,
     )
+    return _strip_markdown(_strip_code_fences(translated)).strip()

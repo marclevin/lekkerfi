@@ -75,6 +75,17 @@ export default function SupporterHome() {
       .slice(0, 5)
   }, [alerts])
 
+  const scamDetectionMock = useMemo(() => {
+    const suspicious = alerts.filter((a) => {
+      const message = String(a.metadata?.message || '').toLowerCase()
+      return message.includes('otp') || message.includes('urgent') || message.includes('verification')
+    }).length
+    return {
+      suspiciousCount: suspicious,
+      openCases: Math.max(1, Math.min(3, suspicious + (unreadCount > 0 ? 1 : 0))),
+    }
+  }, [alerts, unreadCount])
+
   return (
     <div className="page supporter-dashboard-page">
       <div className="page-header supporter-header">
@@ -150,6 +161,26 @@ export default function SupporterHome() {
               <span className="supporter-quick-title">Account Settings</span>
               <span className="supporter-quick-desc">Add users and update supporter profile settings.</span>
             </button>
+          </section>
+
+          <section className="card supporter-scam-dashboard" aria-label="Scam detection prototype">
+            <div className="supporter-overview-head">
+              <h2>Scam Detection (Mocked)</h2>
+              <span className="status-badge status-warning">Prototype</span>
+            </div>
+            <div className="supporter-scam-grid">
+              <article className="supporter-scam-metric">
+                <p className="supporter-summary-label">Open cases</p>
+                <p className="supporter-summary-value">{scamDetectionMock.openCases}</p>
+              </article>
+              <article className="supporter-scam-metric">
+                <p className="supporter-summary-label">Suspicious wording flags</p>
+                <p className="supporter-summary-value">{scamDetectionMock.suspiciousCount}</p>
+              </article>
+            </div>
+            <p className="muted" style={{ marginTop: 10 }}>
+              Next rollout: merchant risk scoring, phone number trust checks, and beneficiary verification prompts.
+            </p>
           </section>
 
           <section className="card" aria-label="Recent alert activity">
