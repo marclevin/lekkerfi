@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text
 from sqlalchemy.orm import relationship
 
 from db.database import Base
@@ -21,6 +21,8 @@ class User(Base):
     trusted_supporter_name = Column(String(255), nullable=True)
     trusted_supporter_contact = Column(String(255), nullable=True)
     preferred_language = Column(String(50), nullable=True, default='english')
+    profile_picture_data = Column(LargeBinary, nullable=True)  # Image file binary
+    profile_picture_type = Column(String(50), nullable=True)  # image/jpeg, image/png
     last_login_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -46,6 +48,7 @@ class AbsaSession(Base):
     surecheck_reference = Column(String(255))  # absaReference from surecheck
     reference_number = Column(String(50))      # unique ref used for this session's API calls
     status = Column(String(30), default="initiated")  # initiated | surecheck_pending | active | rejected
+    selected_accounts = Column(Text, nullable=True)  # JSON list of selected account numbers
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 

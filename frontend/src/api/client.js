@@ -58,6 +58,56 @@ export function listMyUsers() {
   return request('/auth/my-users')
 }
 
+export function uploadProfilePicture(imageFile) {
+  const token = getToken()
+  const formData = new FormData()
+  formData.append('image', imageFile)
+  
+  return fetch(`${BASE}/auth/profile-picture`, {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+  })
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const err = new Error(data.error || `Request failed (${res.status})`)
+        err.status = res.status
+        err.data = data
+        throw err
+      }
+      return data
+    })
+}
+
+export async function fetchProfilePictureUrl(userId = null) {
+  /**
+   * Fetch a user's profile picture as a blob URL.
+   * If userId is not provided, fetches the current user's picture.
+   * Returns null if no picture is set.
+   */
+  const token = getToken()
+  const params = userId ? `?user_id=${userId}` : ''
+  
+  try {
+    const response = await fetch(`${BASE}/auth/profile-picture${params}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    })
+    
+    if (response.ok) {
+      const blob = await response.blob()
+      return URL.createObjectURL(blob)
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 // ── Supporters ────────────────────────────────────────────────────────────────
 
 export function searchSupporters(q) {
@@ -282,12 +332,21 @@ export function deleteAbsaSession(id) {
   return request(`/absa/session/${id}`, { method: 'DELETE' })
 }
 
+// ── ABSA Connect ──────────────────────────────────────────────────────────────
+
+export function connectAbsaAccounts(selectedAccounts = []) {
+  return request('/absa/connect', {
+    method: 'POST',
+    body: JSON.stringify({ selected_accounts: selectedAccounts }),
+  })
+}
+
 // ── Insights ──────────────────────────────────────────────────────────────────
 
-export function generateInsight(language) {
+export function generateInsight(language, selectedAccounts = []) {
   return request('/insights/generate', {
     method: 'POST',
-    body: JSON.stringify({ language }),
+    body: JSON.stringify({ language, selected_accounts: selectedAccounts }),
   })
 }
 

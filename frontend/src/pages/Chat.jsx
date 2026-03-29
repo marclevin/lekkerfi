@@ -148,7 +148,6 @@ export default function Chat() {
   const [error, setError] = useState('')
   const [hasFinancialContext, setHasFinancialContext] = useState(true)
   const [chatPaused, setChatPaused] = useState(false)
-  const [pauseReason, setPauseReason] = useState('')
   const [safetyPause, setSafetyPause] = useState({
     detected: false,
     category: null,
@@ -203,7 +202,7 @@ export default function Chat() {
           const latest = sessions[0]
           setSessionId(latest.id)
           setChatPaused(Boolean(latest.is_paused))
-          setPauseReason(latest.paused_reason || '')
+
           setSafetyPause({
             detected: String(latest.paused_reason || '').startsWith('safety_'),
             category: null,
@@ -224,7 +223,6 @@ export default function Chat() {
           const { session } = await createChatSession()
           setSessionId(session.id)
           setChatPaused(Boolean(session.is_paused))
-          setPauseReason(session.paused_reason || '')
           setSafetyPause({
             detected: String(session.paused_reason || '').startsWith('safety_'),
             category: null,
@@ -296,7 +294,6 @@ export default function Chat() {
       const { session } = await createChatSession()
       setSessionId(session.id)
       setChatPaused(Boolean(session.is_paused))
-      setPauseReason(session.paused_reason || '')
       setSafetyPause({
         detected: String(session.paused_reason || '').startsWith('safety_'),
         category: null,
@@ -335,7 +332,6 @@ export default function Chat() {
       const data = await sendChatMessage(sessionId, text, language, supporterName)
       setHasFinancialContext(data.has_financial_context)
       setChatPaused(Boolean(data.chat_paused))
-      setPauseReason(data.pause_reason || '')
       setSafetyPause(parseSafetyPayload(data))
       const now = Date.now()
       userSendTimestampsRef.current = [...userSendTimestampsRef.current, now].filter((ts) => now - ts <= 60000)
@@ -360,11 +356,9 @@ export default function Chat() {
     } catch (err) {
       if (err?.status === 423) {
         setChatPaused(true)
-        setPauseReason(err?.data?.pause_reason || '')
         setSafetyPause(parseSafetyPayload(err?.data || {}))
         activateCalmAutoMode({ reason: 'chat_pause_signal', source: 'coach_signals' })
       }
-      setError(err.message)
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
     } finally {
       setSending(false)
@@ -393,7 +387,7 @@ export default function Chat() {
   const calming = getCalmingPauseMessage({
     category: safetyPause.category,
     templateKey: safetyPause.templateKey,
-    languageVariant: safetyPause.languageVariant,
+    language,
     useSimplified: isCalmMode,
   })
 
@@ -470,17 +464,6 @@ export default function Chat() {
       )}
 
       {chatPaused && (
-        <div className="chat-error">
-          <div className="alert alert-error" role="alert" aria-atomic="true">
-            {safetyPause.detected
-              ? 'Chat is paused for safety review by your Trusted Supporter.'
-              : 'Chat is paused while your Trusted Supporter reviews this spending request.'}
-            {pauseReason ? ` (${pauseReason.replace(/_/g, ' ')})` : ''}
-          </div>
-        </div>
-      )}
-
-      {chatPaused && safetyPause.detected && (
         <div className="chat-error">
           <section className="chat-safety-panel" aria-labelledby="chat-safety-title" role="region">
             <h2 id="chat-safety-title" className="chat-safety-title">{calming.title}</h2>

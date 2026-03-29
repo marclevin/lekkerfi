@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
 import secrets
+from io import BytesIO
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
 
 import bcrypt
@@ -369,5 +370,80 @@ def my_users():
 
         users = db.query(User).filter_by(supporter_id=supporter_id).all()
         return jsonify({"users": [_user_payload(u) for u in users]})
+    finally:
+        db.close()
+
+
+@auth_bp.post("/profile-picture")
+@jwt_required()
+def upload_profile_picture():
+    """Upload a profile picture for the current user. Accepts JPG/PNG, max 5MB."""
+    user_id = int(get_jwt_identity())
+    
+    if "image" not in request.files:
+        return jsonify({"error": "image file is required"}), 400
+    
+    file = request.files["image"]
+    if not file or file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
+    
+    # Validate file type
+    allowed_types = {"image/jpeg", "image/png"}
+    if file.content_type not in allowed_types:
+        return jsonify({"error": "Only JPG and PNG images are allowed"}), 400
+    
+    # Read and validate file size (max 5MB)
+    file_data = file.read()
+    if len(file_data) > 5 * 1024 * 1024:
+        return jsonify({"error": "File size must be under 5MB"}), 400
+    
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        user.profile_picture_data = file_data
+        user.profile_picture_type = file.content_type
+        db.commit()
+        
+        return jsonify({"message": "Profile picture uploaded successfully"}), 200
+    finally:
+        db.close()
+
+
+@auth_bp.get("/profile-picture")
+@jwt_required()
+def get_profile_picture():
+    """
+    Retrieve the profile picture for the current user or a specific user.
+    Query param 'user_id' allows supporters to fetch their managed users' pictures.
+    """
+    requester_id = int(get_jwt_identity())
+    target_user_id = request.args.get('user_id', type=int)
+    
+    db = SessionLocal()
+    try:
+        # If fetching another user's picture, verify requester is a supporter
+        if target_user_id and target_user_id != requester_id:
+            requester = db.get(User, requester_id)
+            if not requester or requester.role != "supporter":
+                return jsonify({"error": "Only supporters can fetch other users' pictures"}), 403
+            user_to_fetch = db.get(User, target_user_id)
+        else:
+            # Fetch current user's picture
+            user_to_fetch = db.get(User, requester_id)
+        
+        if not user_to_fetch:
+            return jsonify({"error": "User not found"}), 404
+        
+        if not user_to_fetch.profile_picture_data:
+            return jsonify({"error": "No profile picture set"}), 404
+        
+        return send_file(
+            BytesIO(user_to_fetch.profile_picture_data),
+            mimetype=user_to_fetch.profile_picture_type or "image/jpeg",
+            as_attachment=False,
+        )
     finally:
         db.close()

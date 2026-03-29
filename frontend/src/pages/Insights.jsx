@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch'
 import {
   getAccessibleInsight,
   getInsight,
@@ -124,7 +125,21 @@ function ChartZoom({ src, alt, onClose }) {
         >
           ×
         </button>
-        <img src={src} alt={alt} className="chart-zoom-img" />
+        <TransformWrapper
+          initialScale={1}
+          initialPositionX={0}
+          initialPositionY={0}
+          minScale={1}
+          maxScale={4}
+          centerOnInit={false}
+          wheel={{ step: 0.1, disabled: false }}
+          pinch={{ disabled: false }}
+          doubleClick={{ disabled: false }}
+        >
+          <TransformComponent>
+            <img src={src} alt={alt} className="chart-zoom-img" />
+          </TransformComponent>
+        </TransformWrapper>
       </div>
     </div>
   )

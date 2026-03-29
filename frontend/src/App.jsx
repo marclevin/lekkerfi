@@ -7,13 +7,11 @@ import { useAuth } from './context/AuthContext'
 import Chat from './pages/Chat'
 import Connect from './pages/Connect'
 import Flow from './pages/Flow'
-import History from './pages/History'
 import Home from './pages/Home'
 import Insights from './pages/Insights'
 import Login from './pages/Login'
 import Profile from './pages/Profile'
 import Register from './pages/Register'
-import SpendingLimits from './pages/SpendingLimits'
 import SupporterAlerts from './pages/SupporterAlerts'
 import SupporterBankingFlow from './pages/SupporterBankingFlow'
 import SupporterHome from './pages/SupporterHome'
@@ -103,22 +101,6 @@ function getRouteCue(pathname) {
       title: 'Money chat',
       hint: 'Ask one short question about your money.',
       speech: 'You are on money chat. Type one short question and send it.'
-    }
-  }
-  if (pathname === '/limits') {
-    return {
-      icon: '🛡️',
-      title: 'Spending limits',
-      hint: 'See the limits your supporter has set for you.',
-      speech: 'You are on spending limits. This page shows the daily, weekly, and monthly limits set by your trusted supporter.'
-    }
-  }
-  if (pathname === '/history') {
-    return {
-      icon: '🕒',
-      title: 'History',
-      hint: 'View previous uploads and connections.',
-      speech: 'You are on history. Review your previous uploads and connection records.'
     }
   }
   if (pathname === '/profile') {
@@ -311,12 +293,6 @@ export default function App() {
             {calmMode ? 'Calm on' : 'Calm'}
           </button>
         </div>
-        {showCalmAutoBanner && (
-          <div className="calm-auto-banner" role="status" aria-live="polite">
-            <span className="calm-auto-banner-icon" aria-hidden="true">🌿</span>
-            <span className="calm-auto-banner-text">{`Safety signal: ${calmBannerText(calmReason)}. You can turn calm mode on or off anytime.`}</span>
-          </div>
-        )}
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
@@ -327,13 +303,11 @@ export default function App() {
           <Route path="/insights" element={<ProtectedRoute allowedRoles={['user']}><Insights /></ProtectedRoute>} />
           <Route path="/chat"    element={<ProtectedRoute allowedRoles={['user']}><Chat /></ProtectedRoute>} />
           <Route path="/connect" element={<ProtectedRoute allowedRoles={['user']}><Connect /></ProtectedRoute>} />
-          <Route path="/limits"  element={<ProtectedRoute allowedRoles={['user']}><SpendingLimits /></ProtectedRoute>} />
           <Route path="/supporter" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterHome /></ProtectedRoute>} />
           <Route path="/supporter/users" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterUsers /></ProtectedRoute>} />
           <Route path="/supporter/users/:userId" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterUserPage /></ProtectedRoute>} />
           <Route path="/supporter/alerts" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterAlerts /></ProtectedRoute>} />
           <Route path="/supporter/users/:userId/banking" element={<ProtectedRoute allowedRoles={['supporter']}><SupporterBankingFlow /></ProtectedRoute>} />
-          <Route path="/history" element={<ProtectedRoute><History /></ProtectedRoute>} />
           <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

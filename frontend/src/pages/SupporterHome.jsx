@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { getSupporterDashboardAlerts, getSupporterDashboardUsers } from '../api/client'
 import {
   computeAggregateSignals,
@@ -97,12 +97,6 @@ export default function SupporterHome() {
           </span>
         )}
       </div>
-
-      <nav className="supporter-page-nav" aria-label="Supporter sections">
-        <Link className="supporter-page-link active" to="/supporter" aria-current="page">Overview</Link>
-        <Link className="supporter-page-link" to="/supporter/users">Manage users</Link>
-        <Link className="supporter-page-link" to="/supporter/alerts">Alerts</Link>
-      </nav>
 
       {error && <div className="alert alert-error">{error}</div>}
 

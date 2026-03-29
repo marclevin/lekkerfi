@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import {
   addSupporterNote,
   deleteSupporterUserAbsaSession,
+  fetchProfilePictureUrl,
   getSupporterChatMessages,
   getSupporterDashboardUsers,
   getSupporterUserDetails,
@@ -35,6 +36,13 @@ const SUPPORTER_CHAT_SUGGESTIONS = [
   'How can I coach them without taking away independence?',
 ]
 
+const MESSAGE_TEMPLATES = [
+  { label: 'Check-in', text: 'Checking in on you — how are things going?' },
+  { label: 'Pre-purchase', text: "Before that purchase, let's chat — I want to help you think it through." },
+  { label: 'Payday prep', text: "Your payday is coming up — let's plan how to make it stretch." },
+  { label: 'Encouragement', text: "I noticed you've been careful with spending this week — keep it up!" },
+]
+
 function resolveConcernFromSearch(search, fallback = 'snapshot') {
   const concern = new URLSearchParams(search).get('concern')
   if (concern === 'chat-controls') return 'chat_controls'
@@ -53,6 +61,7 @@ export default function SupporterUserPage() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [activeConcern, setActiveConcern] = useState(() => resolveConcernFromSearch(location.search))
+  const [profilePictureUrl, setProfilePictureUrl] = useState(null)
 
   const [noteText, setNoteText] = useState('')
   const [noteSaved, setNoteSaved] = useState(false)
@@ -138,6 +147,24 @@ export default function SupporterUserPage() {
       .catch(() => {})
   }, [userId])
 
+  // Load user's profile picture
+  useEffect(() => {
+    if (!userId) return
+
+    const loadPicture = async () => {
+      const url = await fetchProfilePictureUrl(userId)
+      setProfilePictureUrl(url)
+    }
+
+    loadPicture()
+
+    return () => {
+      if (profilePictureUrl) {
+        URL.revokeObjectURL(profilePictureUrl)
+      }
+    }
+  }, [userId])
+
   useEffect(() => {
     setError('')
     fetchDetails().catch((e) => setError(e.message))
@@ -216,6 +243,25 @@ export default function SupporterUserPage() {
     }
   }
 
+  // Send immediately in the supporter's language (no translation)
+  async function handleSendDirect() {
+    const text = injectText.trim()
+    if (!text) return
+    setInjecting(true)
+    try {
+      await injectSupporterMessage(userId, text, { targetLanguage: 'english' })
+      setInjectText('')
+      setTranslatedInjectText('')
+      setInjectPreviewSource('')
+      await fetchFinanceChat()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setInjecting(false)
+    }
+  }
+
+  // Confirm-send after translation preview
   async function handleInjectMessage() {
     if (!injectText.trim() || !injectPreviewReady) return
     setInjecting(true)
@@ -233,6 +279,11 @@ export default function SupporterUserPage() {
     } finally {
       setInjecting(false)
     }
+  }
+
+  function clearTranslationPreview() {
+    setTranslatedInjectText('')
+    setInjectPreviewSource('')
   }
 
   async function handleToggleChatPause(action) {
@@ -389,10 +440,29 @@ export default function SupporterUserPage() {
     <div className="page supporter-dashboard-page">
       <div className="page-header supporter-header">
         <div>
-          <Link to="/supporter/users" className="btn btn-ghost btn-sm" style={{ marginBottom: 8 }}>
-            ← Back to users
-          </Link>
-          <h1>{displayName}</h1>
+          {new URLSearchParams(location.search).get('focus') ? (
+            <Link to="/supporter/alerts" className="btn btn-ghost btn-sm supporter-breadcrumb">
+              ← Back to alerts
+            </Link>
+          ) : (
+            <Link to="/supporter/users" className="btn btn-ghost btn-sm supporter-breadcrumb">
+              ← Back to users
+            </Link>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            {profilePictureUrl ? (
+              <img
+                src={profilePictureUrl}
+                alt={displayName}
+                style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover' }}
+              />
+            ) : (
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', fontWeight: '600', color: 'var(--gray-600)' }}>
+                {(displayName || '?')[0].toUpperCase()}
+              </div>
+            )}
+            <h1 style={{ margin: 0 }}>{displayName}</h1>
+          </div>
           {user && (
             <span className={`status-badge status-${user.risk_status}`} style={{ marginTop: 4, display: 'inline-block' }}>
               {riskLabel(user.risk_status)}
@@ -404,12 +474,6 @@ export default function SupporterUserPage() {
         </button>
       </div>
 
-      <nav className="supporter-page-nav" aria-label="Supporter sections">
-        <Link className="supporter-page-link" to="/supporter">Overview</Link>
-        <Link className="supporter-page-link" to="/supporter/users">Manage users</Link>
-        <Link className="supporter-page-link" to="/supporter/alerts">Alerts</Link>
-      </nav>
-
       {error && <div className="alert alert-error">{error}</div>}
 
       {!details && !error && (
@@ -419,9 +483,39 @@ export default function SupporterUserPage() {
       )}
 
       {details && (
+        <>
+          {/* Compact signal strip */}
+          {signals && (
+            <div className="signal-strip">
+              {[signals.velocity, signals.inactivity, signals.duplicates].map((sig) => (
+                <span key={sig.label} className={`signal-chip signal-chip-${sig.level}`}>
+                  <span className="signal-chip-dot" aria-hidden="true" />
+                  <span className="signal-chip-label">{sig.label}:</span>
+                  <span className="signal-chip-value">{sig.value}</span>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Recommended action banner */}
+          {careSignals.length > 0 && (
+            <div className="care-action-banner">
+              <span className="care-action-icon" aria-hidden="true">⚡</span>
+              <p className="care-action-text">{careSignals[0]}</p>
+              {careSignals.length > 1 && (
+                <button
+                  className="btn btn-ghost btn-sm care-action-more"
+                  onClick={() => setActiveConcern('snapshot')}
+                >
+                  +{careSignals.length - 1} more
+                </button>
+              )}
+            </div>
+          )}
+
         <div className="card supporter-care-panel">
           <div className="supporter-concern-nav" role="tablist" aria-label="User care concerns">
-            {['snapshot', 'playbook', 'chat_controls', 'finance_controls', 'history', 'ai'].map((tab) => (
+            {['snapshot', 'chat_controls', 'finance_controls', 'history', 'ai'].map((tab) => (
               <button
                 key={tab}
                 className={`supporter-concern-tab${activeConcern === tab ? ' active' : ''}`}
@@ -430,12 +524,11 @@ export default function SupporterUserPage() {
                 onClick={() => setActiveConcern(tab)}
               >
                 {{
-                  snapshot: 'Signals & profile',
-                  playbook: 'Care playbook',
-                  chat_controls: 'Chat Controls',
-                  finance_controls: 'Finance Controls',
+                  snapshot: 'Overview',
+                  chat_controls: 'Chat',
+                  finance_controls: 'Limits & Data',
                   history: 'History',
-                  ai: 'AI finance copilot',
+                  ai: 'AI Copilot',
                 }[tab]}
               </button>
             ))}
@@ -509,29 +602,15 @@ export default function SupporterUserPage() {
                   <p className="muted">No transactions available yet.</p>
                 )}
               </section>
-            </section>
-          )}
 
-          {activeConcern === 'playbook' && (
-            <section className="supporter-concern-panel" role="tabpanel">
-              <div className="supporter-care-playbook">
-                <h3>Calm care playbook</h3>
-                {careSignals.length > 0 ? (
-                  <ul className="supporter-care-list">
-                    {careSignals.map((s, i) => <li key={i}>{s}</li>)}
-                  </ul>
-                ) : (
-                  <p className="muted">No immediate care flags. Continue routine check-ins and positive reinforcement.</p>
-                )}
-              </div>
-              <section className="supporter-care-section">
-                <h3>Supporter Notes</h3>
+              <section className="supporter-care-section supporter-notes-inline">
+                <h3>Your notes</h3>
                 <textarea
                   className="supporter-note-input"
                   value={noteText}
                   onChange={(e) => setNoteText(e.target.value)}
                   placeholder="Add guidance notes for this user..."
-                  rows={5}
+                  rows={3}
                 />
                 <button
                   className={`btn btn-secondary btn-sm supporter-note-save-btn${noteSaved ? ' saved' : ''}`}
@@ -549,12 +628,11 @@ export default function SupporterUserPage() {
 
           {activeConcern === 'chat_controls' && (
             <section className="supporter-concern-panel" role="tabpanel">
-              <section className="supporter-care-section supp-chat-section">
-                <div className="supp-chat-head">
-                  <div>
-                    <h3>Unified chat controls</h3>
-                    <p className="supp-chat-desc">Chat window for review and sending to {firstName}, with language preview and pause controls below.</p>
-                  </div>
+
+              {/* ── User's conversation with AI ─────────────────────────── */}
+              <div className="chat-review-block">
+                <div className="chat-review-header">
+                  <span className="chat-review-title">{firstName}'s conversation with AI</span>
                   <span className={`status-badge ${details.chat_pause?.is_paused ? 'status-warning' : 'status-stable'}`}>
                     {details.chat_pause?.is_paused ? 'Paused' : 'Active'}
                   </span>
@@ -562,78 +640,138 @@ export default function SupporterUserPage() {
 
                 {financeChat?.messages?.length > 0 ? (
                   <div className="supp-chat-messages" aria-live="polite">
-                    {financeChat.messages.slice(-12).map((m) => (
-                      <div key={m.id} className={`supp-chat-msg supp-chat-msg-${m.role === 'supporter' ? 'supporter' : 'assistant'}`}>
-                        <span className="supp-chat-msg-label">{m.role === 'user' ? firstName : m.role === 'supporter' ? 'You' : 'AI'}</span>
-                        <div className="supp-chat-msg-text chat-markdown">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text || ''}</ReactMarkdown>
+                    {financeChat.messages.slice(-16).map((m) => {
+                      const roleClass =
+                        m.role === 'supporter' ? 'supporter' :
+                        m.role === 'user'      ? 'user' :
+                        'assistant'
+                      const roleLabel =
+                        m.role === 'user'      ? firstName :
+                        m.role === 'supporter' ? 'You (sent)' :
+                        'AI'
+                      return (
+                        <div key={m.id} className={`supp-chat-msg supp-chat-msg-${roleClass}`}>
+                          <span className="supp-chat-msg-label">{roleLabel}</span>
+                          <div className="supp-chat-msg-text chat-markdown">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text || ''}</ReactMarkdown>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 ) : (
-                  <p className="muted" style={{ marginTop: 8 }}>No chat messages yet.</p>
+                  <p className="muted chat-review-empty">No messages yet — this user hasn't started a conversation.</p>
                 )}
+              </div>
 
-                <div className="sfc-composer">
-                  <textarea
-                    className="supp-chat-input"
-                    value={injectText}
-                    onChange={(e) => setInjectText(e.target.value)}
-                    placeholder={`Type a message for ${firstName}...`}
-                    rows={2}
-                  />
+              {/* ── Message composer ────────────────────────────────────── */}
+              <div className="sfc-composer">
+                <p className="sfc-composer-label">Send a message to {firstName}</p>
 
-                  <div className="sfc-controls-row" role="group" aria-label="Unified chat controls">
+                <div className="msg-template-row" role="group" aria-label="Message templates">
+                  {MESSAGE_TEMPLATES.map((t) => (
                     <button
-                      className="supp-chat-send"
-                      onClick={handleInjectMessage}
-                      disabled={injecting || !injectPreviewReady}
-                      aria-label="Send message"
-                      title="Send message"
+                      key={t.label}
+                      type="button"
+                      className="msg-template-chip"
+                      onClick={() => { setInjectText(t.text); clearTranslationPreview() }}
+                      title={t.text}
                     >
-                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                        <path d="M3 11.5L21 3L12.5 21L10.2 13.8L3 11.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                      </svg>
+                      {t.label}
                     </button>
+                  ))}
+                </div>
 
+                <textarea
+                  className="supp-chat-input"
+                  value={injectText}
+                  onChange={(e) => { setInjectText(e.target.value); clearTranslationPreview() }}
+                  placeholder={`Write a message for ${firstName}…`}
+                  rows={3}
+                />
+
+                {/* Send actions */}
+                <div className="sfc-send-row">
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSendDirect}
+                    disabled={injecting || !injectText.trim()}
+                  >
+                    {injecting && !injectPreviewReady ? 'Sending…' : 'Send'}
+                  </button>
+
+                  {targetInjectLanguage !== 'english' && (
                     <button
-                      className="btn btn-ghost btn-sm"
+                      className="btn btn-secondary btn-sm"
                       onClick={handlePreviewInjectTranslation}
                       disabled={previewingInject || !injectText.trim()}
                     >
-                      {previewingInject ? 'Preparing preview...' : `Preview in ${targetInjectLanguageLabel}`}
+                      {previewingInject
+                        ? 'Translating…'
+                        : `Translate to ${targetInjectLanguageLabel}`}
                     </button>
+                  )}
+                </div>
 
+                {/* Translation preview */}
+                {injectPreviewReady && (
+                  <div className="sfc-translation-preview">
+                    <p className="sfc-preview-original">
+                      <strong>Original:</strong> {injectPreviewSource}
+                    </p>
+                    <p className="sfc-preview-translated">
+                      <strong>In {targetInjectLanguageLabel}:</strong> {translatedInjectText}
+                    </p>
+                    <div className="sfc-preview-actions">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={handleInjectMessage}
+                        disabled={injecting}
+                      >
+                        {injecting ? 'Sending…' : 'Confirm & send translated'}
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={clearTranslationPreview}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Pause controls ──────────────────────────────────────── */}
+              <div className="chat-pause-section">
+                <div className="chat-pause-row">
+                  <div className="chat-pause-info">
+                    <span className="chat-pause-label">Chat access</span>
+                    <span className={`status-badge ${details.chat_pause?.is_paused ? 'status-warning' : 'status-stable'}`}>
+                      {details.chat_pause?.is_paused ? 'Paused' : 'Active'}
+                    </span>
+                    {details.chat_pause?.is_paused && details.chat_pause?.reason && (
+                      <span className="chat-pause-reason">"{details.chat_pause.reason}"</span>
+                    )}
+                  </div>
+                  <div className="chat-pause-actions">
+                    <input
+                      className="sfc-reason-input"
+                      value={pauseReasonText}
+                      onChange={(e) => setPauseReasonText(e.target.value)}
+                      placeholder="Reason (optional)"
+                      aria-label="Optional pause reason"
+                    />
                     <button
                       className={`btn btn-sm ${details.chat_pause?.is_paused ? 'btn-primary' : 'btn-secondary'}`}
                       onClick={() => handleToggleChatPause(details.chat_pause?.is_paused ? 'unpause' : 'pause')}
                       disabled={saving}
                     >
-                      {details.chat_pause?.is_paused ? 'Unpause chat' : 'Pause chat'}
+                      {saving ? '…' : details.chat_pause?.is_paused ? 'Resume chat' : 'Pause chat'}
                     </button>
-
-                    <input
-                      className="sfc-reason-input"
-                      value={pauseReasonText}
-                      onChange={(e) => setPauseReasonText(e.target.value)}
-                      placeholder="Optional reason"
-                      aria-label="Optional pause reason"
-                    />
                   </div>
-
-                  {!injectPreviewReady && injectText.trim().length > 0 && (
-                    <p className="sfc-preview-hint">Preview first, then send.</p>
-                  )}
-
-                  {injectPreviewReady && (
-                    <div className="sfc-translation-preview">
-                      <p><strong>Original:</strong> {injectPreviewSource}</p>
-                      <p><strong>Translated ({targetInjectLanguageLabel}):</strong> {translatedInjectText}</p>
-                    </div>
-                  )}
                 </div>
-              </section>
+              </div>
+
             </section>
           )}
 
@@ -833,6 +971,7 @@ export default function SupporterUserPage() {
             </section>
           )}
         </div>
+        </>
       )}
     </div>
   )

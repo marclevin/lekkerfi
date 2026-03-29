@@ -793,9 +793,9 @@ export default function Home() {
             role="tab"
             aria-selected="false"
             className="home-tab-btn"
-            onClick={() => navigate('/limits')}
+            onClick={() => navigate('/profile')}
           >
-            Spending limits
+            Settings & History
           </button>
         </div>
       )}

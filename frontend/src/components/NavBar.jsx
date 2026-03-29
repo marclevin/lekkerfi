@@ -1,9 +1,29 @@
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { fetchProfilePictureUrl } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
 export default function NavBar({ showReadAloudIcon = false, onOpenReadAloud }) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const [profilePictureUrl, setProfilePictureUrl] = useState(null)
+
+  useEffect(() => {
+    if (!user?.id) return
+
+    const loadPicture = async () => {
+      const url = await fetchProfilePictureUrl()
+      setProfilePictureUrl(url)
+    }
+
+    loadPicture()
+
+    return () => {
+      if (profilePictureUrl) {
+        URL.revokeObjectURL(profilePictureUrl)
+      }
+    }
+  }, [user?.id])
 
   function handleLogout() {
     logout()
@@ -36,7 +56,11 @@ export default function NavBar({ showReadAloudIcon = false, onOpenReadAloud }) {
           {!isSupporter && (
             <>
               <Link to="/profile" className="user-avatar" title={`${user.email} — Edit profile`} aria-label="Open profile settings">
-                {initials}
+                {profilePictureUrl ? (
+                  <img src={profilePictureUrl} alt="Profile" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+                ) : (
+                  initials
+                )}
               </Link>
               <div className="nav-user-info">
                 <span className="nav-user">{user.full_name || user.email?.split('@')[0]}</span>

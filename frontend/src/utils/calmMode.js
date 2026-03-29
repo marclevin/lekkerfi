@@ -122,136 +122,188 @@ export function subscribeCalmModeChanges(onChange) {
   }
 }
 
+// ── Calming pause templates ────────────────────────────────────────────────────
+//
+// Two templates only:
+//   supporter_review_pause — all financial, behavioural, and ambiguous safety flags.
+//                            Does NOT name what was detected. Keeps tone warm and
+//                            forward-looking: a human is on the way.
+//   crisis_support_pause   — self-harm only. Keeps crisis-line direction and urgency.
+//
+// Each template is pre-translated into the five supported languages so the message
+// appears in the user's chosen language with zero network latency during a pause.
+
 const CALMING_TEMPLATES = {
-  general_pause: {
-    title: 'Let us slow down for a moment',
-    standard: [
-      'I hear that this feels urgent, and you are not alone.',
-      'Chat is paused so your Trusted Supporter can help with a safer next step.',
-      'Take one slow breath in for 4 seconds, then out for 6 seconds.',
-      'If you feel in immediate danger, contact local emergency services now.',
-    ],
-    simplified: [
-      'This feels urgent. You are not alone.',
-      'Chat is paused while your Trusted Supporter helps you choose a safer step.',
-      'Breathe in slowly for 4 seconds, then breathe out for 6 seconds.',
-      'If you are in danger right now, call emergency services now.',
-    ],
+  supporter_review_pause: {
+    title: {
+      english:   'Your Trusted Supporter is being notified',
+      xhosa:     'Umxhasi wakho uyaziswa',
+      zulu:      'USekeli wakho uxazululwa',
+      afrikaans: 'Jou Vertroude Ondersteuner word in kennis gestel',
+      sotho:     'Motlhatlheledi wa hau o a tsebiswa',
+    },
+    standard: {
+      english: [
+        'We have paused here so a real person can help guide your next step.',
+        'Your Trusted Supporter has been alerted and will check in with you.',
+        'Take a slow breath while we get them involved — you do not have to figure this out alone.',
+        'If you feel in immediate danger, contact local emergency services now.',
+      ],
+      xhosa: [
+        'Siphuze apha ukuze umntu wenyani akuncede kugqibela isinyathelo sakho esilandelayo.',
+        'Umxhasi wakho okuThenjwayo uxelelwe kwaye uya kukujonga.',
+        'Phefumla kancinci ngelixa sibandakanya — awunyanzelekanga ukuba ufumanise oku wedwa.',
+        'Ukuba uziva usengozini ngoku, qhagamshelana neeenkonzo zezimele zasekuhlaleni ngoku.',
+      ],
+      zulu: [
+        'Simile lapha ukuze umuntu wangempela akusizele eqondisa isinyathelo sakho esilandelayo.',
+        'USekeli wakho okuThenjwayo wazisiwe futhi uzokuhlola.',
+        'Phefumula kancane sihlela ukubandakanya — awudingeki ukuthola lokhu wedwa.',
+        'Uma uzizwa usengozini ngokushesha, xhumana nezinsizakalo zezingozi zasekhaya manje.',
+      ],
+      afrikaans: [
+        'Ons het hier gestaak sodat \'n regte persoon jou volgende stap kan help begelei.',
+        'Jou Vertroude Ondersteuner is ingelig en sal by jou inskakel.',
+        'Haal \'n stadige asem terwyl ons hulle betrek — jy hoef dit nie alleen uit te vind nie.',
+        'As jy in onmiddellike gevaar voel, kontak plaaslike nooddienste nou.',
+      ],
+      sotho: [
+        'Re emile mona e le hore motho wa nnete a tle a thuse ho tsamaisa mohato wa hau o hlahlamang.',
+        'Motlhatlheledi wa hau oa Botshepehi o tsebisitswe \'me o tla o sheba.',
+        'Hema butle ha re ntse re kenyelletsa — ha o hloke ho fumana sena o le mong.',
+        'Ha o ikutlwa o le kotsing ka potlako, ikopanya le ditshebeletso tsa tšohanyetso tsa lehae joale.',
+      ],
+    },
+    simplified: {
+      english: [
+        'We paused so your Trusted Supporter can help. You are not alone.',
+        'They have been alerted and will check in soon.',
+        'Take a slow breath. One step at a time.',
+        'If you are in danger right now, call emergency services.',
+      ],
+      xhosa: [
+        'Siphuze ukuze umxhasi wakho akuncede. Awukho wedwa.',
+        'Baxelelwe kwaye baza kukujonga kungekudala.',
+        'Phefumla kancinci. Isinyathelo esinye ngexesha.',
+        'Ukuba usengozini ngoku, tsalela iinkonzo zezimele.',
+      ],
+      zulu: [
+        'Simile ukuze usekeli wakho akusizele. Awulona wedwa.',
+        'Bazisiwe futhi bazokuhlola maduze.',
+        'Phefumula kancane. Isinyathelo esisodwa ngasikhathi.',
+        'Uma usengozini manje, shayela izinsizakalo zezingozi.',
+      ],
+      afrikaans: [
+        'Ons het gestaak sodat jou ondersteuner kan help. Jy is nie alleen nie.',
+        'Hulle is ingelig en sal gou inskakel.',
+        'Haal \'n stadige asem. Een stap op \'n slag.',
+        'As jy nou in gevaar is, bel nooddienste.',
+      ],
+      sotho: [
+        'Re emile e le hore motlhatlheledi wa hau a thuse. Ha o le mong.',
+        'Ba tsebisitswe \'me ba tla sheba haufinyane.',
+        'Hema butle. Mohato o le mong ka nako.',
+        'Ha o le kotsing joale, letsa ditshebeletso tsa tšohanyetso.',
+      ],
+    },
   },
-  mania_impulsivity_pause: {
-    title: 'Pause for control and safety',
-    standard: [
-      'Your message sounds intense, and it makes sense to pause before any decision.',
-      'Chat is paused so your Trusted Supporter can review this with you.',
-      'Try grounding: name 5 things you can see and 4 things you can feel.',
-      'When you are ready, wait for supporter guidance before making purchases.',
-    ],
-    simplified: [
-      'Your message sounds very intense. Let us pause first.',
-      'Chat is paused so your Trusted Supporter can help you choose safely.',
-      'Grounding step: name 5 things you see and 4 things you feel.',
-      'Please wait for supporter guidance before buying anything.',
-    ],
-  },
-  illegal_drugs_pause: {
-    title: 'Safety pause is active',
-    standard: [
-      'I cannot help with buying illegal drugs, and your safety matters.',
-      'Chat is paused while your Trusted Supporter reviews this situation.',
-      'Step back from spending for 10 minutes and drink water if possible.',
-      'If you feel out of control or unsafe, reach out to emergency support now.',
-    ],
-    simplified: [
-      'I cannot help with buying illegal drugs. Your safety matters.',
-      'Chat is paused while your Trusted Supporter reviews this.',
-      'Please stop spending for 10 minutes and drink some water.',
-      'If you feel unsafe, contact emergency support now.',
-    ],
-  },
-  weapons_pause: {
-    title: 'Safety review required',
-    standard: [
-      'I cannot assist with buying weapons for harm, and we need a safety pause.',
-      'Your Trusted Supporter has been asked to review before chat continues.',
-      'Take a short break from decision-making and move to a calm space.',
-      'If there is immediate danger, contact emergency services now.',
-    ],
-    simplified: [
-      'I cannot help with buying weapons for harm. We must pause for safety.',
-      'Your Trusted Supporter is reviewing this before chat can continue.',
-      'Take a short break and move to a calm place if you can.',
-      'If danger is immediate, call emergency services now.',
-    ],
-  },
-  self_harm_pause: {
-    title: 'You deserve immediate support',
-    standard: [
-      'I am really glad you reached out. You deserve support right now.',
-      'Chat is paused so your Trusted Supporter can help respond quickly.',
-      'Please contact local emergency services or a crisis line if you might act on these thoughts.',
-      'If possible, move near another person and stay with them while support is arranged.',
-    ],
-    simplified: [
-      'I am glad you reached out. You need support right now.',
-      'Chat is paused so your Trusted Supporter can respond quickly.',
-      'If you might act on these thoughts, call emergency services or a crisis line now.',
-      'If you can, stay near another person while help is arranged.',
-    ],
-  },
-  violence_pause: {
-    title: 'Pause to reduce harm risk',
-    standard: [
-      'I cannot help with harming someone, and we need a safety pause now.',
-      'Your Trusted Supporter has been alerted to review this with urgency.',
-      'Step away from anything that could be used to hurt someone.',
-      'If you think harm could happen soon, contact emergency services immediately.',
-    ],
-    simplified: [
-      'I cannot help with harming someone. We must pause now for safety.',
-      'Your Trusted Supporter was alerted to review this urgently.',
-      'Please step away from anything that could hurt someone.',
-      'If harm could happen soon, call emergency services now.',
-    ],
-  },
-  harmful_spending_pause: {
-    title: 'Take a short cooling-off pause',
-    standard: [
-      'This sounds like a high-risk spending moment, so a pause is the safer choice.',
-      'Chat is paused while your Trusted Supporter reviews your next step.',
-      'Try a 10-minute break before any money decision and avoid opening payment apps.',
-      'When support arrives, choose one low-risk action first.',
-    ],
-    simplified: [
-      'This looks like risky spending. A pause is safer right now.',
-      'Chat is paused while your Trusted Supporter reviews your next step.',
-      'Take a 10-minute break and do not open payment apps.',
-      'When support arrives, take one small safe action first.',
-    ],
+
+  crisis_support_pause: {
+    title: {
+      english:   'You deserve immediate support',
+      xhosa:     'Ufaneleke ukuxhaswa ngoku',
+      zulu:      'Ufanelwe usizo ngokushesha',
+      afrikaans: 'Jy verdien onmiddellike ondersteuning',
+      sotho:     'O tshoaneloa ke thuso ka potlako',
+    },
+    standard: {
+      english: [
+        'We are really glad you reached out. You deserve support right now.',
+        'Chat is paused so your Trusted Supporter can respond quickly.',
+        'Please contact a crisis line or local emergency services if you might act on these thoughts.',
+        'If you can, stay near another person while help is arranged.',
+      ],
+      xhosa: [
+        'Siyavuya kakhulu ukuba ufikile. Ufaneleke ukuxhaswa ngoku.',
+        'Ingxoxo iphuziwe ukuze umxhasi wakho okuThenjwayo aphendule ngokukhawuleza.',
+        'Nceda uqhagamshelane nomgca weengxaki okanye iinkonzo zezimele zasekuhlaleni ukuba ungenza ngezi mcimbi.',
+        'Ukuba unako, hlala kufutshane nomnye umntu ngelixa uluncedo lulungiswa.',
+      ],
+      zulu: [
+        'Sijabule kakhulu ukuthi wafika. Ufanelwe usizo manje.',
+        'Ingxoxo imisiwe ukuze uSekeli wakho okuThenjwayo aphendule ngokushesha.',
+        'Sicela uxhumane nomugqa wezinkinga noma izinsizakalo zezingozi zasekhaya uma ungase wenze lezi zinto.',
+        'Uma ungakwenza, hlala eduze komuntu omnye ngenkathi usizo lulungiswa.',
+      ],
+      afrikaans: [
+        'Ons is regtig bly dat jy uitgereik het. Jy verdien nou ondersteuning.',
+        'Gesels is gestaak sodat jou Vertroude Ondersteuner vinnig kan reageer.',
+        'Kontak asseblief \'n krisislyn of plaaslike nooddienste as jy dalk op hierdie gedagtes kan optree.',
+        'As jy kan, bly naby \'n ander persoon terwyl hulp gereël word.',
+      ],
+      sotho: [
+        'Re thaba haholo hoba o fihlile. O tshoaneloa ke thuso joale.',
+        'Puisano e emisitswe e le hore Motlhatlheledi wa hau oa Botshepehi a arabe ka potlako.',
+        'Ka kopo ikopanya le mola oa tšohanyetso kapa ditshebeletso tsa tšohanyetso tsa lehae haeba o ka etsa dinahano tsena.',
+        'Ha o khona, lula haufi le motho e mong ha thuso e hlophiswa.',
+      ],
+    },
+    simplified: {
+      english: [
+        'We are glad you reached out. You need support right now.',
+        'Chat is paused so your Trusted Supporter can respond quickly.',
+        'If you might act on these thoughts, call emergency services or a crisis line now.',
+        'Stay near another person if you can while help is arranged.',
+      ],
+      xhosa: [
+        'Siyavuya ukuba ufikile. Udinga inkxaso ngoku.',
+        'Ingxoxo iphuziwe ukuze umxhasi wakho aphendule ngokukhawuleza.',
+        'Ukuba ungenza ngezi mcimbi, tsalela iinkonzo zezimele okanye umgca weengxaki ngoku.',
+        'Hlala kufutshane nomnye umntu ukuba unako ngelixa uluncedo lulungiswa.',
+      ],
+      zulu: [
+        'Sijabule ukuthi wafika. Udinga usizo manje.',
+        'Ingxoxo imisiwe ukuze uSekeli wakho aphendule ngokushesha.',
+        'Uma ungase wenze lezi zinto, shayela izinsizakalo zezingozi noma umugqa wezinkinga manje.',
+        'Hlala eduze komuntu omnye uma ungakwenza ngenkathi usizo lulungiswa.',
+      ],
+      afrikaans: [
+        'Ons is bly dat jy uitgereik het. Jy het nou ondersteuning nodig.',
+        'Gesels is gestaak sodat jou ondersteuner vinnig kan reageer.',
+        'As jy dalk op hierdie gedagtes kan optree, bel nooddienste of \'n krisislyn nou.',
+        'Bly naby \'n ander persoon as jy kan terwyl hulp gereël word.',
+      ],
+      sotho: [
+        'Re thaba hoba o fihlile. O hloka thuso joale.',
+        'Puisano e emisitswe e le hore motlhatlheledi wa hau a arabe ka potlako.',
+        'Haeba o ka etsa dinahano tsena, letsa ditshebeletso tsa tšohanyetso kapa mola oa tšohanyetso joale.',
+        'Lula haufi le motho e mong ha o khona ha thuso e hlophiswa.',
+      ],
+    },
   },
 }
 
+// All safety categories except self_harm route to supporter_review_pause.
+// self_harm gets the crisis template with crisis-line direction.
 const CATEGORY_TO_TEMPLATE = {
-  mania_impulsivity: 'mania_impulsivity_pause',
-  illegal_drugs_purchase: 'illegal_drugs_pause',
-  weapons_purchase: 'weapons_pause',
-  self_harm: 'self_harm_pause',
-  violence_threat: 'violence_pause',
-  harmful_spending: 'harmful_spending_pause',
+  self_harm: 'crisis_support_pause',
 }
 
 export function getCalmingPauseMessage({
   category,
   templateKey,
-  languageVariant,
+  language = 'english',
   useSimplified = false,
 } = {}) {
-  const mappedKey = templateKey || CATEGORY_TO_TEMPLATE[String(category || '')] || 'general_pause'
-  const selected = CALMING_TEMPLATES[mappedKey] || CALMING_TEMPLATES.general_pause
-  const variant = useSimplified || languageVariant === 'simplified' ? 'simplified' : 'standard'
-  const lines = selected[variant] || selected.standard
+  const mappedKey = templateKey || CATEGORY_TO_TEMPLATE[String(category || '')] || 'supporter_review_pause'
+  const selected = CALMING_TEMPLATES[mappedKey] || CALMING_TEMPLATES.supporter_review_pause
+  const lang = ['english', 'xhosa', 'zulu', 'afrikaans', 'sotho'].includes(language) ? language : 'english'
+  const variant = useSimplified ? 'simplified' : 'standard'
+  const lines = (selected[variant]?.[lang]) || selected.standard.english
+  const title = selected.title[lang] || selected.title.english
   return {
     key: mappedKey,
-    title: selected.title,
+    title,
     lines,
   }
 }

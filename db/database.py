@@ -72,8 +72,23 @@ def _ensure_sqlite_chat_session_columns() -> None:
             conn.exec_driver_sql("ALTER TABLE finance_chat_sessions ADD COLUMN paused_context_json TEXT")
 
 
+def _ensure_sqlite_absa_session_columns() -> None:
+    if not str(engine.url).startswith("sqlite"):
+        return
+
+    with engine.begin() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(absa_sessions)").fetchall()
+        if not rows:
+            return
+
+        existing = {row[1] for row in rows}
+        if "selected_accounts" not in existing:
+            conn.exec_driver_sql("ALTER TABLE absa_sessions ADD COLUMN selected_accounts TEXT")
+
+
 def init_db() -> None:
     from db import models  # noqa: F401 — ensures models register with Base
     Base.metadata.create_all(engine)
     _ensure_sqlite_user_columns()
     _ensure_sqlite_chat_session_columns()
+    _ensure_sqlite_absa_session_columns()

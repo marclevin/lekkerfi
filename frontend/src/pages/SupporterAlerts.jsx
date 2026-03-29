@@ -1,21 +1,40 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   decideSupporterAlert,
   dismissSupporterAlert,
   getSupporterDashboardAlerts,
+  injectSupporterMessage,
   markSupporterAlertRead,
 } from '../api/client'
 import {
   alertTypeLabel,
-  alertTypeTone,
   chatSnippet,
   formatDateTime,
   formatMoney,
+  hasSafetyFlag,
   isChatAlert,
   severityRank,
   timeMs,
 } from './supporterShared'
+
+const QUICK_TEMPLATES = [
+  "Checking in on you — how are things going?",
+  "Before that purchase, let's chat — I want to help you think it through.",
+  "Your payday is coming up — let's plan together.",
+]
+
+function getPriorityLane(alert) {
+  if (alert.is_overdue) return 'act_now'
+  if (hasSafetyFlag(alert)) return 'act_now'
+  const isPaused = Boolean(alert.metadata?.coach_signals?.pause_required)
+  const needsDecision =
+    alert.alert_type === 'pause_prompt' ||
+    (alert.alert_type === 'decision_support' && isPaused)
+  if (needsDecision && !alert.read) return 'act_now'
+  if (!alert.read) return 'review'
+  return 'logged'
+}
 
 export default function SupporterAlerts() {
   const navigate = useNavigate()
@@ -24,9 +43,15 @@ export default function SupporterAlerts() {
 
   const [alerts, setAlerts] = useState([])
   const [unreadCount, setUnreadCount] = useState(0)
-  const [alertFilter, setAlertFilter] = useState('all')
+  const [lane, setLane] = useState('act_now')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  // Per-alert inline message state
+  const [quickMsgOpen, setQuickMsgOpen] = useState({})
+  const [quickMsgMap, setQuickMsgMap] = useState({})
+  const [quickMsgSending, setQuickMsgSending] = useState({})
+  const [quickMsgSent, setQuickMsgSent] = useState({})
 
   const fetchAlerts = useCallback(async () => {
     const data = await getSupporterDashboardAlerts()
@@ -55,8 +80,8 @@ export default function SupporterAlerts() {
     return () => clearInterval(timer)
   }, [fetchAlerts])
 
-  const sortedAlerts = useMemo(() => {
-    const data = [...alerts].sort((a, b) => {
+  const sorted = useMemo(() => {
+    return [...alerts].sort((a, b) => {
       const overdueDiff = Number(Boolean(b.is_overdue)) - Number(Boolean(a.is_overdue))
       if (overdueDiff !== 0) return overdueDiff
       const unreadDiff = Number(!b.read) - Number(!a.read)
@@ -67,16 +92,15 @@ export default function SupporterAlerts() {
       if (sevDiff !== 0) return sevDiff
       return timeMs(b.created_at) - timeMs(a.created_at)
     })
+  }, [alerts])
 
-    if (alertFilter === 'chat') return data.filter((a) => isChatAlert(a))
-    if (alertFilter === 'finance') return data.filter((a) => !isChatAlert(a))
-    return data
-  }, [alertFilter, alerts])
+  const lanes = useMemo(() => ({
+    act_now: sorted.filter((a) => getPriorityLane(a) === 'act_now'),
+    review:  sorted.filter((a) => getPriorityLane(a) === 'review'),
+    logged:  sorted.filter((a) => getPriorityLane(a) === 'logged'),
+  }), [sorted])
 
-  const groupedAlerts = useMemo(() => ({
-    chat: sortedAlerts.filter((alert) => isChatAlert(alert)),
-    finance: sortedAlerts.filter((alert) => !isChatAlert(alert)),
-  }), [sortedAlerts])
+  const visible = useMemo(() => lanes[lane] ?? [], [lane, lanes])
 
   async function handleDismissAlert(alertId) {
     try {
@@ -108,112 +132,239 @@ export default function SupporterAlerts() {
     }
   }
 
+  function toggleQuickMsg(alertId) {
+    setQuickMsgOpen((prev) => ({ ...prev, [alertId]: !prev[alertId] }))
+  }
+
+  async function handleQuickMessage(alert) {
+    const text = (quickMsgMap[alert.id] || '').trim()
+    if (!text || !alert.user_id) return
+    setQuickMsgSending((p) => ({ ...p, [alert.id]: true }))
+    try {
+      await injectSupporterMessage(alert.user_id, text, { targetLanguage: 'english' })
+      setQuickMsgOpen((p) => ({ ...p, [alert.id]: false }))
+      setQuickMsgMap((p) => ({ ...p, [alert.id]: '' }))
+      setQuickMsgSent((p) => ({ ...p, [alert.id]: true }))
+      setTimeout(() => setQuickMsgSent((p) => ({ ...p, [alert.id]: false })), 3000)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setQuickMsgSending((p) => ({ ...p, [alert.id]: false }))
+    }
+  }
+
   function renderAlert(alert) {
     const snippet = chatSnippet(alert)
     const focused = focusId && String(alert.id) === String(focusId)
+    const safetyFlagged = hasSafetyFlag(alert)
+    const concernSummary = alert.metadata?.concern_summary || null
+    const isPaused = Boolean(alert.metadata?.coach_signals?.pause_required)
+    const showDecisionButtons =
+      alert.alert_type === 'pause_prompt' ||
+      (alert.alert_type === 'decision_support' && isPaused)
+    const firstName = (alert.user_name || 'User').split(' ')[0]
+    const isQuickOpen = Boolean(quickMsgOpen[alert.id])
+    const quickText = quickMsgMap[alert.id] || ''
+    const sent = Boolean(quickMsgSent[alert.id])
+
+    // Status banner label
+    let bannerLabel = null
+    let bannerClass = ''
+    if (alert.is_overdue) {
+      bannerLabel = `Overdue by ${alert.overdue_by_minutes || 0} minutes — needs immediate action`
+      bannerClass = 'banner-overdue'
+    } else if (safetyFlagged) {
+      bannerLabel = 'Needs your attention'
+      bannerClass = 'banner-safety'
+    } else if (alert.severity === 'critical') {
+      bannerLabel = 'Critical alert'
+      bannerClass = 'banner-critical'
+    }
 
     return (
       <article
         key={alert.id}
-        className={`supporter-alert supporter-${alert.severity} supporter-alert-${alertTypeTone(alert.alert_type)}${alert.read ? ' supporter-alert-read' : ''}${alert.is_overdue ? ' supporter-alert-overdue' : ''}${focused ? ' supporter-alert-focused' : ''}`}
+        className={[
+          'supporter-alert-v2',
+          `severity-${alert.severity}`,
+          alert.read ? 'alert-v2-read' : 'alert-v2-unread',
+          focused ? 'alert-v2-focused' : '',
+        ].filter(Boolean).join(' ')}
       >
-        <div className="supporter-alert-top">
-          <div>
-            <p className="supporter-alert-user">{alert.user_name}</p>
-            <p className="supporter-alert-type">{alertTypeLabel(alert.alert_type)}</p>
+        {/* Top status banner */}
+        {bannerLabel && (
+          <div className={`alert-status-banner ${bannerClass}`}>
+            {bannerLabel}
           </div>
-          <div className="supporter-alert-meta">
-            {alert.is_overdue && (
-              <span className="supporter-alert-overdue-pill">Overdue by {alert.overdue_by_minutes || 0}m</span>
-            )}
-            <span className="supporter-alert-time">{formatDateTime(alert.created_at)}</span>
+        )}
+
+        {/* Header row */}
+        <div className="alert-v2-header">
+          <div className="alert-v2-identity">
+            <span className="alert-v2-name">{alert.user_name}</span>
+            <span className="alert-v2-type">{alertTypeLabel(alert.alert_type)}</span>
           </div>
+          <span className="alert-v2-time">{formatDateTime(alert.created_at)}</span>
         </div>
 
-        <div className="supporter-alert-body">
-          <p>Safe to spend: <strong>{formatMoney(alert.safe_to_spend)}</strong></p>
-          {alert.metadata?.message && <p>{alert.metadata.message}</p>}
+        {/* Concern summary */}
+        {concernSummary && (
+          <p className="alert-v2-summary">{concernSummary}</p>
+        )}
+
+        {/* Financial pill badges */}
+        <div className="alert-financial-pills">
+          <span className="alert-pill alert-pill-safe">
+            Safe: <strong>{formatMoney(alert.safe_to_spend)}</strong>
+          </span>
           {alert.metadata?.coach_signals?.purchase_amount && (
-            <p>Purchase amount: <strong>{formatMoney(alert.metadata.coach_signals.purchase_amount)}</strong></p>
+            <span className="alert-pill alert-pill-want">
+              Wants: <strong>{formatMoney(alert.metadata.coach_signals.purchase_amount)}</strong>
+            </span>
           )}
         </div>
 
-        {(snippet.user || snippet.assistant || alert.alert_type === 'pause_prompt') && (
-          <div className="supporter-chat-snippet">
-            <p className="supporter-chat-snippet-label">Triggered by chat</p>
-            {snippet.user && <p className="supporter-chat-snippet-line"><strong>User:</strong> {snippet.user}</p>}
-            {snippet.assistant && <p className="supporter-chat-snippet-line"><strong>Assistant:</strong> {snippet.assistant}</p>}
-            {!snippet.user && !snippet.assistant && (
-              <p className="supporter-chat-snippet-line"><strong>Context:</strong> Chat snippet is still being prepared.</p>
+        {/* Chat snippet as speech bubbles */}
+        {(snippet.user || snippet.assistant) && (
+          <div className="alert-chat-bubbles">
+            {snippet.user && (
+              <div className="bubble-row bubble-user">
+                <div className="chat-bubble">{snippet.user}</div>
+                {snippet.userEnglish && (
+                  <p className="bubble-translation">({snippet.userEnglish})</p>
+                )}
+              </div>
+            )}
+            {snippet.assistant && (
+              <div className="bubble-row bubble-ai">
+                <div className="chat-bubble">{snippet.assistant}</div>
+              </div>
             )}
           </div>
         )}
 
-        <div className="supporter-alert-actions">
-          {alert.alert_type === 'pause_prompt' && (
-            <>
-              <button className="btn btn-primary btn-sm" onClick={() => handleDecision(alert.id, 'approve')}>Approve</button>
-              <button className="btn btn-secondary btn-sm" onClick={() => handleDecision(alert.id, 'decline')}>Decline</button>
-            </>
+        {/* Decision buttons — primary, full-width */}
+        {showDecisionButtons && (
+          <div className="alert-decision-row">
+            <button className="btn btn-approve" onClick={() => handleDecision(alert.id, 'approve')}>
+              Approve — Resume chat
+            </button>
+            <button className="btn btn-decline" onClick={() => handleDecision(alert.id, 'decline')}>
+              Decline — Keep paused
+            </button>
+          </div>
+        )}
+
+        {/* Secondary actions */}
+        <div className="alert-secondary-row">
+          {sent ? (
+            <span className="alert-sent-confirm">Message sent</span>
+          ) : (
+            <button className="btn btn-ghost btn-sm" onClick={() => toggleQuickMsg(alert.id)}>
+              {isQuickOpen ? 'Cancel' : 'Quick message'}
+            </button>
           )}
-          <button className="btn btn-secondary btn-sm" onClick={() => handleOpenAlert(alert)}>Open user</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => handleDismissAlert(alert.id)}>Dismiss</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => handleOpenAlert(alert)}>
+            Open care page →
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => handleDismissAlert(alert.id)}>
+            Dismiss
+          </button>
         </div>
+
+        {/* Inline quick message composer */}
+        {isQuickOpen && (
+          <div className="alert-quick-compose">
+            <div className="quick-msg-templates">
+              {QUICK_TEMPLATES.map((t) => (
+                <button
+                  key={t}
+                  className="quick-template-chip"
+                  onClick={() => setQuickMsgMap((p) => ({ ...p, [alert.id]: t }))}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="quick-msg-input-row">
+              <textarea
+                className="quick-msg-input"
+                value={quickText}
+                onChange={(e) => setQuickMsgMap((p) => ({ ...p, [alert.id]: e.target.value }))}
+                placeholder={`Message to ${firstName}…`}
+                rows={2}
+              />
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => handleQuickMessage(alert)}
+                disabled={!quickText.trim() || quickMsgSending[alert.id]}
+              >
+                {quickMsgSending[alert.id] ? '…' : 'Send'}
+              </button>
+            </div>
+          </div>
+        )}
       </article>
     )
+  }
+
+  const laneLabels = {
+    act_now: 'Act Now',
+    review:  'Review',
+    logged:  'Logged',
   }
 
   return (
     <div className="page supporter-dashboard-page">
       <div className="page-header supporter-header">
-        <h1>Supporter Alerts</h1>
-        <p>A dedicated triage view for chat and financial alerts.</p>
+        <h1>Alerts</h1>
+        <p>Triage and act on chat and financial alerts for your users.</p>
         {unreadCount > 0 && (
           <span className="supporter-unread-pill">
-            {unreadCount} unread alert{unreadCount > 1 ? 's' : ''}
+            {unreadCount} unread
           </span>
         )}
       </div>
-
-      <nav className="supporter-page-nav" aria-label="Supporter sections">
-        <Link className="supporter-page-link" to="/supporter">Overview</Link>
-        <Link className="supporter-page-link" to="/supporter/users">Manage users</Link>
-        <Link className="supporter-page-link active" to="/supporter/alerts" aria-current="page">Alerts</Link>
-      </nav>
 
       {error && <div className="alert alert-error">{error}</div>}
 
       {loading ? (
         <div className="page-center"><span className="spinner" /></div>
       ) : (
-        <section className="card supporter-alerts-panel">
-          <div className="supporter-alert-filter-row">
-            <div className="tab-bar" role="tablist" aria-label="Alert filters">
-              <button role="tab" aria-selected={alertFilter === 'all'} className={`tab${alertFilter === 'all' ? ' active' : ''}`} onClick={() => setAlertFilter('all')}>All</button>
-              <button role="tab" aria-selected={alertFilter === 'chat'} className={`tab${alertFilter === 'chat' ? ' active' : ''}`} onClick={() => setAlertFilter('chat')}>Chat review</button>
-              <button role="tab" aria-selected={alertFilter === 'finance'} className={`tab${alertFilter === 'finance' ? ' active' : ''}`} onClick={() => setAlertFilter('finance')}>Financial</button>
-            </div>
+        <>
+          {/* Priority lane tabs */}
+          <div className="priority-lane-bar">
+            {['act_now', 'review', 'logged'].map((l) => (
+              <button
+                key={l}
+                className={`priority-lane-tab${lane === l ? ' active' : ''}${l === 'act_now' && lanes.act_now.length > 0 ? ' has-urgent' : ''}`}
+                onClick={() => setLane(l)}
+                aria-pressed={lane === l}
+              >
+                {laneLabels[l]}
+                {lanes[l].length > 0 && (
+                  <span className="lane-count">{lanes[l].length}</span>
+                )}
+              </button>
+            ))}
           </div>
 
-          {sortedAlerts.length === 0 ? (
-            <div className="empty-state"><p>No active alerts.</p></div>
-          ) : (
-            <div className="supporter-alert-groups">
-              {groupedAlerts.chat.length > 0 && (
-                <div className="supporter-alert-group">
-                  <p className="supporter-alert-group-title">Chat spending reviews ({groupedAlerts.chat.length})</p>
-                  <div className="supporter-alert-feed">{groupedAlerts.chat.map((alert) => renderAlert(alert))}</div>
-                </div>
-              )}
-              {groupedAlerts.finance.length > 0 && (
-                <div className="supporter-alert-group">
-                  <p className="supporter-alert-group-title">Financial monitoring ({groupedAlerts.finance.length})</p>
-                  <div className="supporter-alert-feed">{groupedAlerts.finance.map((alert) => renderAlert(alert))}</div>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
+          <section className="supporter-alert-feed-v2" aria-label={`${laneLabels[lane]} alerts`}>
+            {visible.length === 0 ? (
+              <div className="empty-state card">
+                <p>
+                  {lane === 'act_now'
+                    ? 'No urgent alerts right now — check the Review tab for unread items.'
+                    : lane === 'review'
+                    ? 'All caught up — nothing new to review.'
+                    : 'No logged alerts yet.'}
+                </p>
+              </div>
+            ) : (
+              visible.map((alert) => renderAlert(alert))
+            )}
+          </section>
+        </>
       )}
     </div>
   )

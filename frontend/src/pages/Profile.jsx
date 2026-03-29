@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  addSupporter, getIncomingLinkRequests, listMySuporters, listMyUsers, registerUser,
-  removeSupporter, respondLinkRequest, searchSupporters,
+  addSupporter, deleteAbsaSession, deleteStatement, getIncomingLinkRequests, listAbsaSessions, listMySuporters, listMyUsers, listStatements, registerUser,
+  removeSupporter, respondLinkRequest, searchSupporters, uploadProfilePicture,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 
 const LANGUAGES = [
   { value: 'english',   label: 'English' },
@@ -30,6 +31,300 @@ function Field({ label, value, hint }) {
       <span className="profile-field-value">{value || '—'}</span>
       {hint && <span className="profile-field-hint">{hint}</span>}
     </div>
+  )
+}
+
+// ── Formatting helpers (from History & SpendingLimits) ────────────────────────
+
+function formatDate(iso) {
+  return new Date(iso).toLocaleDateString('en-ZA', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function StatusBadge({ status }) {
+  return <span className={`badge badge-${status}`}>{status}</span>
+}
+
+function fmt(value) {
+  if (value == null) return 'Not set'
+  return `R ${Number(value).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function LimitRow({ label, value }) {
+  const isSet = value != null
+  return (
+    <div className="spending-limit-row">
+      <span className="spending-limit-label">{label}</span>
+      <span className={`spending-limit-value${isSet ? ' spending-limit-set' : ' spending-limit-unset'}`}>
+        {fmt(value)}
+      </span>
+    </div>
+  )
+}
+
+// ── Statement history ──────────────────────────────────────────────────────────
+
+function StatementHistory() {
+  const navigate = useNavigate()
+  const [statements, setStatements] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    listStatements()
+      .then((d) => setStatements(d.statements || []))
+      .catch((e) => setError(e.message))
+  }, [])
+
+  async function handleDelete(id, filename) {
+    if (!window.confirm(`Remove "${filename}"? This will also delete its insight. Your supporter will be notified.`)) return
+    setDeletingId(id)
+    try {
+      await deleteStatement(id)
+      setStatements((prev) => prev.filter((s) => s.id !== id))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  if (!statements) {
+    return (
+      <div className="page-center" style={{ minHeight: 60 }}>
+        <div className="spinner" />
+      </div>
+    )
+  }
+
+  return (
+    <section>
+      <div className="history-section-header">
+        <p className="section-label">Statement Uploads</p>
+        <button className="btn btn-ghost btn-sm" onClick={() => navigate('/upload')}>
+          + Upload new
+        </button>
+      </div>
+
+      {error && <div className="alert alert-error">{error}</div>}
+
+      {statements?.length === 0 && (
+        <div className="empty-state">
+          <p>No statements uploaded yet.</p>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/upload')}>
+            Upload your first statement
+          </button>
+        </div>
+      )}
+
+      {statements?.length > 0 && (
+        <div className="statement-list">
+          {statements.map((stmt) => (
+            <div key={stmt.id} className="history-item card">
+              <div className="history-item-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+              </div>
+              <div className="history-item-body">
+                <span className="history-item-title">{stmt.original_filename}</span>
+                <span className="history-item-sub">{formatDate(stmt.created_at)}</span>
+              </div>
+              <div className="history-item-right">
+                <StatusBadge status={stmt.status} />
+                {stmt.status === 'done' && stmt.insight?.id && (
+                  <button className="btn btn-ghost btn-sm" onClick={() => navigate('/insights')}>
+                    View →
+                  </button>
+                )}
+                <button
+                  className="btn btn-danger btn-sm"
+                  disabled={deletingId === stmt.id}
+                  onClick={() => handleDelete(stmt.id, stmt.original_filename)}
+                  aria-label={`Delete ${stmt.original_filename}`}
+                >
+                  {deletingId === stmt.id ? '…' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ── ABSA connection history ────────────────────────────────────────────────────
+
+function AbsaHistory() {
+  const navigate = useNavigate()
+  const [sessions, setSessions] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    listAbsaSessions()
+      .then((d) => setSessions(d.sessions || []))
+      .catch((e) => setError(e.message))
+  }, [])
+
+  async function handleDelete(id) {
+    if (!window.confirm('Remove this ABSA connection? Your supporter will be notified.')) return
+    setDeletingId(id)
+    try {
+      await deleteAbsaSession(id)
+      setSessions((prev) => prev.filter((s) => s.id !== id))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  if (!sessions) {
+    return (
+      <div className="page-center" style={{ minHeight: 60 }}>
+        <div className="spinner" />
+      </div>
+    )
+  }
+
+  return (
+    <section>
+      <div className="history-section-header">
+        <p className="section-label">ABSA Connections</p>
+        <button className="btn btn-ghost btn-sm" onClick={() => navigate('/flow')}>
+          + Connect again
+        </button>
+      </div>
+
+      {error && <div className="alert alert-error">{error}</div>}
+
+      {sessions !== null && sessions.length === 0 && (
+        <div className="empty-state">
+          <p>No ABSA connections yet.</p>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/flow')}>
+            Link your ABSA account
+          </button>
+        </div>
+      )}
+
+      {sessions?.length > 0 && (
+        <div className="statement-list">
+          {sessions.map((s) => {
+            let selectedAccountsList = []
+            try {
+              const parsed = JSON.parse(s.selected_accounts || '[]')
+              selectedAccountsList = Array.isArray(parsed) ? parsed : []
+            } catch {
+              // Silent fail if selected_accounts is not valid JSON
+            }
+
+            return (
+              <div key={s.id} className="history-item card">
+                <div className="history-item-icon absa">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="5" width="20" height="14" rx="2" />
+                    <line x1="2" y1="10" x2="22" y2="10" />
+                  </svg>
+                </div>
+                <div className="history-item-body">
+                  <span className="history-item-title">ABSA Connection</span>
+                  <span className="history-item-sub">{formatDate(s.created_at)}</span>
+                  {selectedAccountsList.length > 0 && (
+                    <span className="history-item-sub">
+                      Accounts: {selectedAccountsList.join(', ')}
+                    </span>
+                  )}
+                  {s.reference_number && (
+                    <span className="history-item-sub">Ref: {s.reference_number}</span>
+                  )}
+                </div>
+                <div className="history-item-right">
+                  <StatusBadge status={s.status} />
+                  <button
+                    className="btn btn-danger btn-sm"
+                    disabled={deletingId === s.id}
+                    onClick={() => handleDelete(s.id)}
+                    aria-label="Remove ABSA connection"
+                  >
+                    {deletingId === s.id ? '…' : 'Remove'}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ── Spending limits section (from SpendingLimits page) ────────────────────────
+
+function SpendingLimitsSection() {
+  const [supporters, setSupporters] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    listMySuporters()
+      .then((d) => setSupporters(d.supporters || []))
+      .catch((e) => setError(e.message))
+  }, [])
+
+  if (!supporters) {
+    return (
+      <div className="page-center" style={{ minHeight: 60 }}>
+        <span className="spinner" />
+      </div>
+    )
+  }
+
+  const supportersWithLimits = supporters.filter(
+    (s) => s.spending_limit != null && s.is_registered,
+  )
+
+  return (
+    <>
+      {error && <div className="alert alert-error" role="alert">{error}</div>}
+
+      {supportersWithLimits.length === 0 && (
+        <div className="card empty-state">
+          <p style={{ fontSize: '2rem', marginBottom: 8 }}>🛡️</p>
+          <p>No spending limits have been set for you yet.</p>
+          <p className="muted" style={{ marginTop: 4 }}>
+            Your trusted supporter can set daily, weekly, and monthly limits to help you manage your money.
+          </p>
+        </div>
+      )}
+
+      {supportersWithLimits.map((s) => {
+        const lim = s.spending_limit
+        return (
+          <div key={s.id} className="card spending-limit-card">
+            <div className="spending-limit-header">
+              <span className="spending-limit-supporter-icon" aria-hidden="true">🤝</span>
+              <div>
+                <p className="spending-limit-supporter-name">{s.display_name}</p>
+                <p className="spending-limit-supporter-label">Set by your supporter</p>
+              </div>
+            </div>
+            <div className="spending-limit-rows">
+              <LimitRow label="Daily limit" value={lim.daily_spend_limit} />
+              <LimitRow label="Weekly limit" value={lim.weekly_spend_limit} />
+              <LimitRow label="Monthly limit" value={lim.monthly_spend_limit} />
+              <LimitRow label="Low balance alert" value={lim.min_balance_threshold} />
+            </div>
+            <p className="spending-limit-footer">
+              Last updated {new Date(lim.updated_at).toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' })}
+            </p>
+          </div>
+        )
+      })}
+    </>
   )
 }
 
@@ -460,6 +755,12 @@ export default function Profile() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
+  const [calmMode, setCalmMode] = useState(() => readStoredBoolean(CALM_MODE_KEY, false))
+  const [uploadingPicture, setUploadingPicture] = useState(false)
+  const [pictureError, setPictureError] = useState('')
+  const [picturePreview, setPicturePreview] = useState(null)
+  const [profilePictureUrl, setProfilePictureUrl] = useState(null)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     setFullName(user?.full_name || '')
@@ -468,6 +769,48 @@ export default function Profile() {
     setUserNumber(user?.user_number || '1')
     setUserEmail(user?.user_email || '')
   }, [user?.full_name, user?.preferred_language, user?.access_account, user?.user_number, user?.user_email])
+
+  useEffect(() => {
+    return subscribeCalmModeChanges((snapshot) => {
+      const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
+      setCalmMode(Boolean(active))
+    })
+  }, [])
+
+  // Load profile picture with proper auth header
+  useEffect(() => {
+    if (!user?.id) return
+
+    const loadProfilePicture = async () => {
+      try {
+        const token = localStorage.getItem('token')
+        const response = await fetch('/api/auth/profile-picture', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+
+        if (response.ok) {
+          const blob = await response.blob()
+          const url = URL.createObjectURL(blob)
+          setProfilePictureUrl(url)
+        } else {
+          setProfilePictureUrl(null)
+        }
+      } catch (err) {
+        setProfilePictureUrl(null)
+      }
+    }
+
+    loadProfilePicture()
+
+    // Cleanup blob URL on unmount
+    return () => {
+      if (profilePictureUrl) {
+        URL.revokeObjectURL(profilePictureUrl)
+      }
+    }
+  }, [user?.id])
 
   async function handleSave(e) {
     e.preventDefault()
@@ -497,6 +840,62 @@ export default function Profile() {
     navigate('/login')
   }
 
+  async function handlePictureUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Validate file type
+    if (!file.type.startsWith('image/jpeg') && !file.type.startsWith('image/png')) {
+      setPictureError('Only JPG and PNG images are allowed')
+      return
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setPictureError('File size must be under 5MB')
+      return
+    }
+
+    // Show preview
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      setPicturePreview(evt.target.result)
+    }
+    reader.readAsDataURL(file)
+
+    // Upload
+    setPictureError('')
+    setUploadingPicture(true)
+    try {
+      await uploadProfilePicture(file)
+      // Clear the file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+      // Reload the profile picture from server
+      const token = localStorage.getItem('token')
+      const response = await fetch('/api/auth/profile-picture', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      if (response.ok) {
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        if (profilePictureUrl) {
+          URL.revokeObjectURL(profilePictureUrl)
+        }
+        setProfilePictureUrl(url)
+      }
+      setPicturePreview(null)
+    } catch (err) {
+      setPictureError(err.message || 'Failed to upload picture. Please try again.')
+      setPicturePreview(null)
+    } finally {
+      setUploadingPicture(false)
+    }
+  }
+
   const displayName = user?.full_name || user?.email?.split('@')[0] || 'Profile'
   const initials = displayName[0]?.toUpperCase() ?? '?'
   const memberSince = user?.created_at
@@ -504,10 +903,65 @@ export default function Profile() {
     : null
   const isSupporter = user?.role === 'supporter'
 
+  // Calm mode alternative for users
+  if (!isSupporter && calmMode) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <h1>Profile</h1>
+          <p>Calm mode keeps one simple next step.</p>
+        </div>
+        <section className="card calm-essentials-panel" aria-label="Calm mode profile action">
+          <p className="calm-essentials-copy">Skip detailed profile for now and focus on essentials support.</p>
+          <button
+            className="btn btn-primary"
+            onClick={() => navigate('/chat?prefill=Please help me with essentials only and one safe next step.&autosend=1')}
+          >
+            💬 Ask about essentials
+          </button>
+        </section>
+      </div>
+    )
+  }
+
   return (
     <div className="page profile-page">
       <div className="profile-hero">
-        <div className="profile-avatar-lg">{initials}</div>
+        <div style={{ position: 'relative' }}>
+          {picturePreview || profilePictureUrl ? (
+            <img
+              src={picturePreview || profilePictureUrl}
+              alt="Profile"
+              className="profile-avatar-lg"
+              style={{ width: 80, height: 80, borderRadius: '50%', objectFit: 'cover', background: 'var(--gray-100)' }}
+              onError={() => {
+                // If image fails to load, show initials
+                if (!picturePreview) {
+                  setProfilePictureUrl(null)
+                }
+              }}
+            />
+          ) : (
+            <div className="profile-avatar-lg">{initials}</div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png"
+            onChange={handlePictureUpload}
+            style={{ display: 'none' }}
+            disabled={uploadingPicture}
+          />
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingPicture}
+            style={{ position: 'absolute', bottom: -4, right: -4, padding: 6, fontSize: '0.8rem' }}
+            title="Change profile picture"
+          >
+            {uploadingPicture ? '⟳' : '✎'}
+          </button>
+        </div>
         <div className="profile-hero-text">
           <h1 className="profile-name">{displayName}</h1>
           <div className="profile-hero-meta">
@@ -516,6 +970,8 @@ export default function Profile() {
           </div>
         </div>
       </div>
+
+      {pictureError && <div className="alert alert-error" style={{ margin: '12px 0' }}>{pictureError}</div>}
 
       {/* ── Account info ── */}
       <Section title="Account">
@@ -621,13 +1077,21 @@ export default function Profile() {
         </Section>
       )}
 
-      {/* ── Spending limits shortcut (regular users only) ── */}
+      {/* ── Spending limits (regular users only) ── */}
       {!isSupporter && (
         <Section title="Spending Limits">
           <p className="profile-section-desc">Your trusted supporter may have set daily, weekly, or monthly spending limits to help you stay on track.</p>
-          <Link to="/limits" className="btn btn-secondary btn-sm" style={{ marginTop: 8 }}>
-            View my spending limits
-          </Link>
+          <SpendingLimitsSection />
+        </Section>
+      )}
+
+      {/* ── History sections (regular users only) ── */}
+      {!isSupporter && (
+        <Section title="History">
+          <div className="history-sections">
+            <StatementHistory />
+            <AbsaHistory />
+          </div>
         </Section>
       )}
 

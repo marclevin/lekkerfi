@@ -50,11 +50,12 @@ export function riskRank(value) {
 }
 
 export function isChatAlert(alert) {
-  return alert.alert_type === 'pause_prompt'
+  return alert.alert_type === 'pause_prompt' || alert.alert_type === 'decision_support'
 }
 
 export function alertTypeLabel(value) {
   if (value === 'pause_prompt') return 'Chat spending review'
+  if (value === 'decision_support') return 'Chat concern — review needed'
   if (value === 'payday_warning') return 'Payday warning'
   if (value === 'low_balance') return 'Low balance'
   if (value === 'unusual_spend') return 'Unusual spend'
@@ -62,19 +63,34 @@ export function alertTypeLabel(value) {
 }
 
 export function alertTypeTone(value) {
-  if (value === 'pause_prompt') return 'chat'
+  if (value === 'pause_prompt' || value === 'decision_support') return 'chat'
   return 'finance'
+}
+
+// True when the backend flagged a safety concern (not just a financial one).
+// Used to render the "Needs your attention" badge without naming the category.
+export function hasSafetyFlag(alert) {
+  return Boolean(alert.metadata?.coach_signals?.safety_detected)
 }
 
 export function chatSnippet(alert) {
   const ctx = alert.chat_context || alert.metadata?.chat_context || {}
+  const userOriginal = ctx.user_message || alert.metadata?.coach_signals?.trigger_user_message || null
+  const userEnglish = ctx.user_message_english || alert.metadata?.coach_signals?.trigger_user_english || null
+  const assistant =
+    ctx.assistant_message ||
+    ctx.assistant_response_english ||
+    alert.metadata?.coach_signals?.trigger_assistant_english ||
+    null
+  // Only surface the English translation if it meaningfully differs from the original
+  const showTranslation =
+    userEnglish &&
+    userOriginal &&
+    userEnglish.trim().toLowerCase() !== userOriginal.trim().toLowerCase()
   return {
-    user: ctx.user_message || alert.metadata?.coach_signals?.trigger_user_message || null,
-    assistant:
-      ctx.assistant_message ||
-      ctx.assistant_response_english ||
-      alert.metadata?.coach_signals?.trigger_assistant_english ||
-      null,
+    user: userOriginal,
+    userEnglish: showTranslation ? userEnglish : null,
+    assistant,
   }
 }
 

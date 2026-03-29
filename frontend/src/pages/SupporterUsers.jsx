@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { getSupporterDashboardUsers, searchUsersForSupporter, sendLinkRequest } from '../api/client'
+import { fetchProfilePictureUrl, getSupporterDashboardUsers, searchUsersForSupporter, sendLinkRequest } from '../api/client'
 import { formatDateTime, formatMoney, riskLabel, riskRank, timeMs } from './supporterShared'
 
 function AddExistingUser() {
@@ -93,6 +93,7 @@ export default function SupporterUsers() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [pictures, setPictures] = useState({}) // userId -> blob URL
 
   const fetchUsers = useCallback(async () => {
     const data = await getSupporterDashboardUsers()
@@ -105,6 +106,31 @@ export default function SupporterUsers() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
   }, [fetchUsers])
+
+  // Load profile pictures for all users
+  useEffect(() => {
+    if (users.length === 0) return
+
+    const loadPictures = async () => {
+      const newPictures = {}
+      for (const user of users) {
+        const url = await fetchProfilePictureUrl(user.id)
+        if (url) {
+          newPictures[user.id] = url
+        }
+      }
+      setPictures(newPictures)
+    }
+
+    loadPictures()
+
+    return () => {
+      // Cleanup blob URLs
+      Object.values(pictures).forEach((url) => {
+        URL.revokeObjectURL(url)
+      })
+    }
+  }, [users.length])
 
   const sortedUsers = useMemo(() => {
     return [...users].sort((a, b) => {
@@ -124,12 +150,6 @@ export default function SupporterUsers() {
         <h1>Manage Users</h1>
         <p>Select a person to open their dedicated care page.</p>
       </div>
-
-      <nav className="supporter-page-nav" aria-label="Supporter sections">
-        <Link className="supporter-page-link" to="/supporter">Overview</Link>
-        <Link className="supporter-page-link active" to="/supporter/users" aria-current="page">Manage users</Link>
-        <Link className="supporter-page-link" to="/supporter/alerts">Alerts</Link>
-      </nav>
 
       {error && <div className="alert alert-error">{error}</div>}
 
@@ -159,7 +179,20 @@ export default function SupporterUsers() {
                 aria-label={`Open care page for ${user.full_name}`}
               >
                 <div className="supporter-user-row">
-                  <strong>{user.full_name}</strong>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {pictures[user.id] ? (
+                      <img
+                        src={pictures[user.id]}
+                        alt={user.full_name}
+                        style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+                      />
+                    ) : (
+                      <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--gray-600)' }}>
+                        {(user.full_name || '?')[0].toUpperCase()}
+                      </div>
+                    )}
+                    <strong>{user.full_name}</strong>
+                  </div>
                   <span className={`status-badge status-${user.risk_status}`}>{riskLabel(user.risk_status)}</span>
                 </div>
                 <div className="supporter-user-meta">

@@ -1,5 +1,6 @@
+import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import cast
 
 from flask import Blueprint, current_app, jsonify, request
@@ -7,6 +8,8 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from db.database import SessionLocal
 from db.models import AbsaSession, SupporterNotification, User, UserSupporter
+from services.combine import combine_transactions
+from services.unified_finance import ingest_combined_transactions
 
 absa_bp = Blueprint("absa", __name__)
 _RECENT_SURECHECK_HOURS = 48
@@ -327,6 +330,105 @@ def get_accounts():
         db.close()
 
 
+@absa_bp.post("/connect")
+@jwt_required()
+def connect_absa_accounts():
+    """
+    Fetches and stores transaction history for selected ABSA accounts.
+    Does NOT generate insights — just fetches and persists the data.
+    
+    Body: { "selected_accounts": ["4048195297", ...] }
+    """
+    DEMO_ACCOUNT_ALLOWLIST = {'4048195297', '4048223317'}
+    
+    user_id = int(get_jwt_identity())
+    client = _client()
+    settings = _settings()
+    data = request.get_json() or {}
+
+    # Only process selected accounts, filtered to demo allowlist
+    selected_accounts = data.get("selected_accounts", [])
+    filtered_accounts = [
+        str(acc).strip()
+        for acc in selected_accounts
+        if str(acc).strip() in DEMO_ACCOUNT_ALLOWLIST
+    ]
+
+    to_date = date.today().isoformat()
+    from_date = (date.today() - timedelta(days=90)).isoformat()
+
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        active_session = (
+            db.query(AbsaSession)
+            .filter_by(user_id=user_id, status="active")
+            .order_by(AbsaSession.created_at.desc())
+            .first()
+        )
+
+        if not active_session:
+            return jsonify({
+                "error": "No active ABSA session. Complete the SureCheck first."
+            }), 400
+
+        if not filtered_accounts:
+            return jsonify({
+                "error": "No valid accounts selected."
+            }), 400
+
+        # Fetch transaction history for selected accounts only
+        token = client.get_oauth_token()
+        trx_responses = []
+        for account_number in sorted(set(filtered_accounts)):
+            resp = client.fetch_trx_history(
+                token=token,
+                account_number=account_number,
+                org_name=settings.org_name,
+                org_id=settings.org_id,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            trx_rc = resp.get("resultCode")
+            if trx_rc != 200:
+                return jsonify({
+                    "error": (
+                        f"TrxHistory failed for account {account_number} "
+                        f"(resultCode={trx_rc}): {resp.get('resultMessage', '')}"
+                    )
+                }), 502
+            trx_responses.append(resp)
+
+        # Combine and store the transaction data
+        combined = combine_transactions(trx_responses)
+        ingest_combined_transactions(
+            db,
+            user_id=user_id,
+            source_type="absa",
+            source_ref=f"absa:{active_session.id}:{from_date}:{to_date}",
+            combined=combined,
+        )
+        
+        # Store the selected accounts in the session for display purposes
+        active_session.selected_accounts = json.dumps(filtered_accounts)  # type: ignore
+        db.commit()
+
+        return jsonify({
+            "message": "Accounts connected and data stored successfully.",
+            "accounts": filtered_accounts,
+            "session_id": active_session.id,
+        }), 201
+
+    except Exception as exc:
+        db.rollback()
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+
 @absa_bp.delete("/session/<int:session_id>")
 @jwt_required()
 def delete_absa_session(session_id: int):
@@ -373,16 +475,26 @@ def list_absa_sessions():
             .order_by(AbsaSession.created_at.desc())
             .all()
         )
-        return jsonify({
-            "sessions": [
-                {
-                    "id": s.id,
-                    "status": s.status,
-                    "reference_number": s.reference_number,
-                    "created_at": s.created_at.isoformat(),
-                }
-                for s in sessions
-            ]
-        })
+        
+        session_list = []
+        for s in sessions:
+            session_dict = {
+                "id": s.id,
+                "status": s.status,
+                "reference_number": s.reference_number,
+                "created_at": s.created_at.isoformat(),
+            }
+            # Include selected accounts if available
+            if s.selected_accounts:
+                try:
+                    selected = json.loads(s.selected_accounts)
+                    session_dict["selected_accounts"] = selected
+                except Exception:
+                    session_dict["selected_accounts"] = []
+            else:
+                session_dict["selected_accounts"] = []
+            session_list.append(session_dict)
+        
+        return jsonify({"sessions": session_list})
     finally:
         db.close()

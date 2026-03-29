@@ -152,8 +152,11 @@ def generate_insight():
     """
     Builds a unified insight over the user's combined finance state.
 
-    Body: { "language": "xhosa" }
+    Body: { "language": "xhosa", "selected_accounts": ["4048195297", ...] }
     """
+    # Demo mode: only fetch transaction history for whitelisted accounts
+    DEMO_ACCOUNT_ALLOWLIST = {'4048195297', '4048223317'}
+    
     user_id = int(get_jwt_identity())
     client = current_app.config["ABSA_CLIENT"]
     settings = current_app.config["ABSA_SETTINGS"]
@@ -161,6 +164,14 @@ def generate_insight():
 
     language = data.get("language", "xhosa").strip()
     force_refresh = bool(data.get("force_refresh", False))
+    
+    # Only process selected accounts, filtered to demo allowlist
+    selected_accounts = data.get("selected_accounts", [])
+    filtered_accounts = [
+        str(acc).strip()
+        for acc in selected_accounts
+        if str(acc).strip() in DEMO_ACCOUNT_ALLOWLIST
+    ]
 
     to_date = date.today().isoformat()
     from_date = (date.today() - timedelta(days=90)).isoformat()
@@ -198,7 +209,7 @@ def generate_insight():
                     "cached": True,
                 }), 200
 
-        # Refresh ABSA rows in unified storage using all fetched accounts from active session.
+        # Refresh ABSA rows in unified storage using only selected accounts.
         active_session = (
             db.query(AbsaSession)
             .filter_by(user_id=user_id, status="active")
@@ -208,25 +219,30 @@ def generate_insight():
         user = db.get(User, user_id)
 
         if active_session and user and user.access_account:
-            accounts_payload = client.fetch_accounts(
-                token=active_session.token,
-                access_account=user.access_account,
-                user_number=user.user_number,
-                org_name=settings.org_name,
-                org_id=settings.org_id,
-                reference_number=active_session.reference_number,
-            )
-            rc = accounts_payload.get("resultCode")
-            if rc != 200:
-                return jsonify({
-                    "error": f"Account fetch failed (resultCode={rc}): {accounts_payload.get('resultMessage', '')}",
-                }), 502
+            # Use frontend-selected accounts if provided, else fall back to fetching all and filtering
+            if filtered_accounts:
+                account_numbers = filtered_accounts
+            else:
+                # Fallback: fetch all accounts from ABSA and filter to demo allowlist
+                accounts_payload = client.fetch_accounts(
+                    token=active_session.token,
+                    access_account=user.access_account,
+                    user_number=user.user_number,
+                    org_name=settings.org_name,
+                    org_id=settings.org_id,
+                    reference_number=active_session.reference_number,
+                )
+                rc = accounts_payload.get("resultCode")
+                if rc != 200:
+                    return jsonify({
+                        "error": f"Account fetch failed (resultCode={rc}): {accounts_payload.get('resultMessage', '')}",
+                    }), 502
 
-            account_numbers = []
-            for acc in accounts_payload.get("accounts", []) or []:
-                num = acc.get("accountNumber") or acc.get("account_number")
-                if num:
-                    account_numbers.append(str(num))
+                account_numbers = [
+                    str(acc.get("accountNumber") or acc.get("account_number")).strip()
+                    for acc in accounts_payload.get("accounts", []) or []
+                    if str(acc.get("accountNumber") or acc.get("account_number")).strip() in DEMO_ACCOUNT_ALLOWLIST
+                ]
 
             if account_numbers:
                 token = client.get_oauth_token()

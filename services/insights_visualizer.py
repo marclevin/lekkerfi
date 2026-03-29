@@ -176,7 +176,7 @@ class FinancialInsightsVisualizer:
         expenses = sum(abs(t["amount"]) for t in parsed_trx["expenses"])
         net = income - expenses
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 10))
         
         # Bar chart
         categories = ["Income", "Expenses", "Net"]
@@ -222,7 +222,7 @@ class FinancialInsightsVisualizer:
         # Save visualization
         filename = f"spending_overview_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         filepath = self.output_dir / filename
-        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.savefig(filepath, dpi=200, bbox_inches="tight")
         plt.close()
         
         return {
@@ -250,7 +250,7 @@ class FinancialInsightsVisualizer:
         
         merchants, amounts = zip(*[(m[0], abs(m[1]["total"])) for m in top_merchants])
         
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(16, 10))
         
         bars = ax.barh(merchants, amounts, color=self.colors[: len(merchants)], edgecolor="black")
         ax.set_xlabel("Amount Spent (R)", fontsize=12, fontweight="bold")
@@ -272,7 +272,7 @@ class FinancialInsightsVisualizer:
         
         filename = f"category_breakdown_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         filepath = self.output_dir / filename
-        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.savefig(filepath, dpi=200, bbox_inches="tight")
         plt.close()
         
         return {
@@ -302,7 +302,7 @@ class FinancialInsightsVisualizer:
         
         date_objs = [self._parse_date(d) for d in dates]
         
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(16, 10))
         
         ax.plot(date_objs, daily_income, marker="o", label="Income", color="green", linewidth=2, markersize=4)
         ax.plot(date_objs, daily_expense, marker="s", label="Expenses", color="red", linewidth=2, markersize=4)
@@ -322,7 +322,7 @@ class FinancialInsightsVisualizer:
         
         filename = f"daily_trend_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         filepath = self.output_dir / filename
-        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.savefig(filepath, dpi=200, bbox_inches="tight")
         plt.close()
         
         return {
@@ -357,7 +357,7 @@ class FinancialInsightsVisualizer:
             cumulative.append(balance)
             dates.append(trx["date"])
         
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(16, 10))
         
         ax.plot(dates, cumulative, marker="o", color="blue", linewidth=2.5, markersize=4, label="Balance")
         ax.fill_between(dates, cumulative, alpha=0.2, color="blue")
@@ -377,7 +377,7 @@ class FinancialInsightsVisualizer:
         
         filename = f"balance_progression_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         filepath = self.output_dir / filename
-        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.savefig(filepath, dpi=200, bbox_inches="tight")
         plt.close()
         
         min_balance = min(cumulative)
@@ -406,7 +406,7 @@ class FinancialInsightsVisualizer:
         amounts = [t["amount"] for t in all_trx]
         colors_bar = ["green" if a > 0 else "red" for a in amounts]
         
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(16, 10))
         
         bars = ax.barh(descriptions, amounts, color=colors_bar, alpha=0.7, edgecolor="black")
         ax.set_xlabel("Amount (R)", fontsize=12, fontweight="bold")
@@ -431,7 +431,7 @@ class FinancialInsightsVisualizer:
         
         filename = f"top_transactions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         filepath = self.output_dir / filename
-        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.savefig(filepath, dpi=200, bbox_inches="tight")
         plt.close()
         
         return {
@@ -465,7 +465,7 @@ class FinancialInsightsVisualizer:
             cumulative.append(total)
             dates.append(trx["date"])
         
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(16, 10))
         
         ax.plot(dates, cumulative, marker="o", color="darkred", linewidth=2.5, markersize=4)
         ax.fill_between(dates, cumulative, alpha=0.3, color="red")
@@ -482,7 +482,7 @@ class FinancialInsightsVisualizer:
         
         filename = f"cumulative_spending_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         filepath = self.output_dir / filename
-        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.savefig(filepath, dpi=200, bbox_inches="tight")
         plt.close()
         
         return {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  connectAbsaAccounts,
   generateInsight,
   getAccounts,
   listSurechecks,
@@ -10,11 +11,8 @@ import {
 import { useAuth } from '../context/AuthContext'
 import { readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 import {
-  ensureAccountTags,
   friendlyAccountList,
-  friendlyAccountName,
   maskAccountReference,
-  normalizeAccountKey,
   readAccountTags,
 } from '../utils/accountTags'
 
@@ -358,13 +356,31 @@ function StepSurecheck({ sessionData, onDone }) {
 
 // ── Step 3: Select Accounts ───────────────────────────────────────────────────
 
+const DEMO_ACCOUNT_ALLOWLIST = new Set(['4048195297', '4048223317'])
+
+function parseBalanceForDisplay(raw) {
+  if (raw == null || raw === '' || raw === '—') return null
+
+  const text = String(raw).trim()
+  if (!text || text === '—') return null
+
+  const clean = text.replace(/[R\s,]/g, '')
+  const parsed = Number.parseFloat(clean)
+  if (Number.isNaN(parsed)) return null
+
+  // ABSA demo payloads can send integer minor units (cents), e.g. 2927040 => 29270.40.
+  const hasExplicitDecimal = clean.includes('.')
+  if (!hasExplicitDecimal && Number.isInteger(parsed)) {
+    return parsed / 100
+  }
+
+  return parsed
+}
+
 function fmtBalance(raw) {
-  if (raw == null || raw === '' || raw === '—') return '—'
-  // Strip any existing R/currency prefix and commas, then reformat
-  const clean = String(raw).replace(/[R\s,]/g, '').trim()
-  const num = parseFloat(clean)
-  if (isNaN(num)) return String(raw)
-  return `R\u00A0${num.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const amount = parseBalanceForDisplay(raw)
+  if (amount == null) return '—'
+  return `R\u00A0${amount.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function StepAccounts({ onDone }) {
@@ -372,7 +388,6 @@ function StepAccounts({ onDone }) {
   const [accounts, setAccounts] = useState(null)
   const [selected, setSelected] = useState([])
   const [language] = useState(() => normalizeLanguage(user?.preferred_language))
-  const [accountTags, setAccountTags] = useState(() => readAccountTags())
   const [loadingAccounts, setLoadingAccounts] = useState(false)
   const [loadingGenerate, setLoadingGenerate] = useState(false)
   const [error, setError] = useState('')
@@ -382,35 +397,11 @@ function StepAccounts({ onDone }) {
     setLoadingAccounts(true)
     try {
       const data = await getAccounts()
-      const nextAccounts = data.accounts || []
-      setAccounts(nextAccounts)
-
-      const accountKeys = nextAccounts
-        .map((acc) => normalizeAccountKey(acc.accountNumber || acc.account_number))
-        .filter(Boolean)
-
-      // Seed tags with the actual account name from ABSA if no tag saved yet
-      const existingTags = readAccountTags()
-      const merged = { ...existingTags }
-      let changed = false
-      nextAccounts.forEach((acc) => {
-        const key = normalizeAccountKey(acc.accountNumber || acc.account_number)
-        if (!key) return
-        if (!String(merged[key] || '').trim()) {
-          const apiName = acc.productName || acc.name || acc.accountType || acc.account_type
-          if (apiName) {
-            merged[key] = apiName
-            changed = true
-          }
-        }
+      const nextAccounts = (data.accounts || []).filter((acc) => {
+        const accountNumber = String(acc.accountNumber || acc.account_number || '').trim()
+        return DEMO_ACCOUNT_ALLOWLIST.has(accountNumber)
       })
-
-      const ensured = ensureAccountTags(merged, accountKeys)
-      if (ensured.changed || changed) {
-        setAccountTags(ensured.tags)
-      } else {
-        setAccountTags(merged)
-      }
+      setAccounts(nextAccounts)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -432,9 +423,10 @@ function StepAccounts({ onDone }) {
     setError('')
     setLoadingGenerate(true)
     try {
-      await generateInsight(language)
+      await connectAbsaAccounts(selected)
       onDone({
         selectedAccounts: selected,
+        accountObjects: accounts.filter((acc) => selected.includes(String(acc.accountNumber || acc.account_number || '').trim())),
         connectedAt: new Date().toISOString(),
       })
     } catch (err) {
@@ -471,11 +463,12 @@ function StepAccounts({ onDone }) {
           ) : (
             <div className="account-list">
               {accounts.map((acc, index) => {
-                const num  = acc.accountNumber  || acc.account_number
-                const key = normalizeAccountKey(num)
-                const tagName = friendlyAccountName(num, accountTags, index)
+                const num = String(acc.accountNumber || acc.account_number || '').trim()
+                const accountName = String(
+                  acc.accountName || acc.productName || acc.name || acc.accountType || acc.account_type || 'Account'
+                ).trim()
                 const balance = acc.currentBalance || acc.current_balance || '—'
-                const type = acc.accountType    || acc.account_type || ''
+                const type = acc.accountType || acc.account_type || ''
                 return (
                   <div
                     key={num || `account-${index}`}
@@ -496,11 +489,11 @@ function StepAccounts({ onDone }) {
                       checked={selected.includes(num)}
                       onClick={(e) => e.stopPropagation()}
                       onChange={() => toggleAccount(num)}
-                      aria-label={`Use ${tagName} for summary`}
+                      aria-label={`Use ${accountName} for summary`}
                     />
                     <div className="account-details">
                       <span className="account-tag-label">Account name</span>
-                      <span className="account-name">{tagName}</span>
+                      <span className="account-name">{accountName}</span>
                       <span className="account-num">{maskAccountReference(num)}</span>
                       {type && <span className="account-type">{type}</span>}
                     </div>
@@ -528,16 +521,21 @@ function StepAccounts({ onDone }) {
 
 // ── Step 4: Insight Result ────────────────────────────────────────────────────
 
-function StepInsight({ selectedAccounts }) {
+function StepInsight({ selectedAccounts, accountObjects = [] }) {
   const navigate = useNavigate()
   const accountTags = readAccountTags()
+
+  // Display exact ABSA account names from the account objects if available, otherwise fall back to friendly names
+  const displayNames = accountObjects.length > 0
+    ? accountObjects.map((acc) => String(acc.accountName || acc.productName || acc.name || acc.accountType || acc.account_type || 'Account').trim()).join(', ')
+    : friendlyAccountList(selectedAccounts, accountTags, ', ')
 
   return (
     <div className="step-content" aria-live="polite">
       <h2>Accounts connected</h2>
       <p className="step-desc">
         Your selected money source is now connected:{' '}
-        <strong>{friendlyAccountList(selectedAccounts, accountTags, ', ')}</strong>.
+        <strong>{displayNames}</strong>.
       </p>
 
       <div className="callout callout-success">
@@ -618,8 +616,8 @@ export default function Flow() {
           />
         )}
         {step === 2 && <StepSurecheck sessionData={sessionData} onDone={() => setStep(3)} />}
-        {step === 3 && <StepAccounts onDone={(data) => { setConnectedAccounts(data.selectedAccounts || []); setStep(4) }} />}
-        {step === 4 && <StepInsight selectedAccounts={connectedAccounts} />}
+        {step === 3 && <StepAccounts onDone={(data) => { setConnectedAccounts(data); setStep(4) }} />}
+        {step === 4 && <StepInsight selectedAccounts={connectedAccounts.selectedAccounts || []} accountObjects={connectedAccounts.accountObjects || []} />}
       </div>
     </div>
   )
