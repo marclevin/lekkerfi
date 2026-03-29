@@ -214,9 +214,22 @@ export default function App() {
 
   useEffect(() => {
     const isUser = user?.role === 'user'
-    if (!isUser || calmManualOverride) return
-    setCalmMode(Boolean(calmAutoMode))
-    writeCalmManualMode(Boolean(calmAutoMode))
+    if (!isUser) return
+
+    // Safety-triggered auto calm mode must take precedence over stale manual overrides.
+    if (calmAutoMode) {
+      if (calmManualOverride) {
+        setCalmManualOverride(false)
+        writeCalmManualOverride(false)
+      }
+      setCalmMode(true)
+      writeCalmManualMode(true)
+      return
+    }
+
+    if (calmManualOverride) return
+    setCalmMode(false)
+    writeCalmManualMode(false)
   }, [user?.role, calmAutoMode, calmManualOverride])
 
   function toggleCalmMode() {

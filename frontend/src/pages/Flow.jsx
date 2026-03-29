@@ -432,11 +432,10 @@ function StepAccounts({ onDone }) {
     setError('')
     setLoadingGenerate(true)
     try {
-      const data = await generateInsight(selected, language)
+      await generateInsight(language)
       onDone({
         selectedAccounts: selected,
         connectedAt: new Date().toISOString(),
-        insightId: data?.insight_id ?? null,
       })
     } catch (err) {
       setError(err.message)

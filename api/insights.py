@@ -8,12 +8,13 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from db.database import SessionLocal
-from db.models import Insight, Translation, User
+from db.models import AbsaSession, Insight, Translation, User
 from services.accessible_insights import generate_accessible_carousel
 from services.combine import combine_transactions
 from services.insights_visualizer import FinancialInsightsVisualizer
 from services.simplify import simplify
 from services.translate import translate, translate_text
+from services.unified_finance import ingest_combined_transactions, rebuild_unified_snapshot
 
 insights_bp = Blueprint("insights", __name__)
 
@@ -149,37 +150,30 @@ def _weekly_win_payload(raw_transactions: str | None) -> dict:
 @jwt_required()
 def generate_insight():
     """
-    Full pipeline: fetch TrxHistory for selected accounts (last 90 days),
-    combine, simplify, translate, persist and return the insight.
+    Builds a unified insight over the user's combined finance state.
 
-    Body: { "selected_accounts": ["4048195297", ...], "language": "xhosa" }
+    Body: { "language": "xhosa" }
     """
     user_id = int(get_jwt_identity())
     client = current_app.config["ABSA_CLIENT"]
     settings = current_app.config["ABSA_SETTINGS"]
     data = request.get_json() or {}
 
-    selected_accounts = data.get("selected_accounts", [])
     language = data.get("language", "xhosa").strip()
     force_refresh = bool(data.get("force_refresh", False))
-
-    if not selected_accounts:
-        return jsonify({"error": "selected_accounts is required"}), 400
 
     to_date = date.today().isoformat()
     from_date = (date.today() - timedelta(days=90)).isoformat()
 
     db = SessionLocal()
     try:
-        # Return cached insight if one exists for the same accounts within 6 hours
+        # Return cached insight if one exists within 6 hours.
         if not force_refresh:
             cutoff = datetime.utcnow() - timedelta(hours=6)
-            accounts_key = json.dumps(sorted(selected_accounts))
             recent = (
                 db.query(Insight)
                 .filter(
                     Insight.user_id == user_id,
-                    Insight.selected_accounts == accounts_key,
                     Insight.created_at >= cutoff,
                 )
                 .order_by(Insight.created_at.desc())
@@ -189,9 +183,13 @@ def generate_insight():
                 translation = next(
                     (t for t in recent.translations if t.language == language), None
                 )
+                try:
+                    cached_accounts = json.loads(recent.selected_accounts)
+                except Exception:
+                    cached_accounts = []
                 return jsonify({
                     "insight_id": recent.id,
-                    "accounts": selected_accounts,
+                    "accounts": cached_accounts,
                     "period": {"from": from_date, "to": to_date},
                     "simplified": recent.simplified_text,
                     "translated": translation.translated_text if translation else recent.simplified_text,
@@ -199,37 +197,85 @@ def generate_insight():
                     "created_at": recent.created_at.isoformat(),
                     "cached": True,
                 }), 200
-        # Fresh token — one-time consent TrxHistory doesn't need a long-lived session
-        token = client.get_oauth_token()
 
-        trx_responses = []
-        for account_number in selected_accounts:
-            resp = client.fetch_trx_history(
-                token=token,
-                account_number=account_number,
+        # Refresh ABSA rows in unified storage using all fetched accounts from active session.
+        active_session = (
+            db.query(AbsaSession)
+            .filter_by(user_id=user_id, status="active")
+            .order_by(AbsaSession.created_at.desc())
+            .first()
+        )
+        user = db.get(User, user_id)
+
+        if active_session and user and user.access_account:
+            accounts_payload = client.fetch_accounts(
+                token=active_session.token,
+                access_account=user.access_account,
+                user_number=user.user_number,
                 org_name=settings.org_name,
                 org_id=settings.org_id,
-                from_date=from_date,
-                to_date=to_date,
+                reference_number=active_session.reference_number,
             )
-            rc = resp.get("resultCode")
+            rc = accounts_payload.get("resultCode")
             if rc != 200:
                 return jsonify({
-                    "error": (
-                        f"TrxHistory failed for account {account_number} "
-                        f"(resultCode={rc}): {resp.get('resultMessage', '')}"
-                    )
+                    "error": f"Account fetch failed (resultCode={rc}): {accounts_payload.get('resultMessage', '')}",
                 }), 502
-            trx_responses.append(resp)
 
-        combined = combine_transactions(trx_responses)
-        simplified_text = simplify(combined)
+            account_numbers = []
+            for acc in accounts_payload.get("accounts", []) or []:
+                num = acc.get("accountNumber") or acc.get("account_number")
+                if num:
+                    account_numbers.append(str(num))
+
+            if account_numbers:
+                token = client.get_oauth_token()
+                trx_responses = []
+                for account_number in sorted(set(account_numbers)):
+                    resp = client.fetch_trx_history(
+                        token=token,
+                        account_number=account_number,
+                        org_name=settings.org_name,
+                        org_id=settings.org_id,
+                        from_date=from_date,
+                        to_date=to_date,
+                    )
+                    trx_rc = resp.get("resultCode")
+                    if trx_rc != 200:
+                        return jsonify({
+                            "error": (
+                                f"TrxHistory failed for account {account_number} "
+                                f"(resultCode={trx_rc}): {resp.get('resultMessage', '')}"
+                            )
+                        }), 502
+                    trx_responses.append(resp)
+
+                combined = combine_transactions(trx_responses)
+                ingest_combined_transactions(
+                    db,
+                    user_id=user_id,
+                    source_type="absa",
+                    source_ref=f"absa:{active_session.id}:{from_date}:{to_date}",
+                    combined=combined,
+                )
+
+        unified_combined = rebuild_unified_snapshot(db, user_id=user_id)
+        if not unified_combined.get("accounts"):
+            return jsonify({"error": "No unified finance data found. Connect ABSA or upload a statement first."}), 400
+
+        combined_for_analysis = unified_combined
+        account_refs = [
+            acc.get("account_number") or acc.get("account_name") or "Account"
+            for acc in combined_for_analysis.get("accounts", [])
+        ]
+
+        simplified_text = simplify(combined_for_analysis)
         translated_text = translate(simplified_text, language)
 
         insight = Insight(
             user_id=user_id,
-            selected_accounts=json.dumps(selected_accounts),
-            raw_transactions=json.dumps(combined),
+            selected_accounts=json.dumps(account_refs),
+            raw_transactions=json.dumps(combined_for_analysis),
             simplified_text=simplified_text,
         )
         db.add(insight)
@@ -246,7 +292,7 @@ def generate_insight():
 
         return jsonify({
             "insight_id": insight.id,
-            "accounts": selected_accounts,
+            "accounts": account_refs,
             "period": {"from": from_date, "to": to_date},
             "simplified": simplified_text,
             "translated": translated_text,

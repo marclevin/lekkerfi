@@ -284,10 +284,10 @@ export function deleteAbsaSession(id) {
 
 // ── Insights ──────────────────────────────────────────────────────────────────
 
-export function generateInsight(selected_accounts, language) {
+export function generateInsight(language) {
   return request('/insights/generate', {
     method: 'POST',
-    body: JSON.stringify({ selected_accounts, language }),
+    body: JSON.stringify({ language }),
   })
 }
 

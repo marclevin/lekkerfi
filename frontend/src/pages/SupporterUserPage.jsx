@@ -553,7 +553,7 @@ export default function SupporterUserPage() {
                 <div className="supp-chat-head">
                   <div>
                     <h3>Unified chat controls</h3>
-                    <p className="supp-chat-desc">One chat window for review and sending to {firstName}, with language preview and pause controls below.</p>
+                    <p className="supp-chat-desc">Chat window for review and sending to {firstName}, with language preview and pause controls below.</p>
                   </div>
                   <span className={`status-badge ${details.chat_pause?.is_paused ? 'status-warning' : 'status-stable'}`}>
                     {details.chat_pause?.is_paused ? 'Paused' : 'Active'}

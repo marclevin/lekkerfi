@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { createChatSession, getChatMessages, listChatSessions, listInsights, sendChatMessage } from '../api/client'
+import { createChatSession, getChatMessages, listChatSessions, sendChatMessage } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { friendlyAccountList, readAccountTags } from '../utils/accountTags'
 import {
   activateCalmAutoMode,
   readStoredBoolean,
@@ -28,10 +27,6 @@ function normalizeLanguage(value) {
 
 function formatTime(iso) {
   return new Date(iso).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatDate(iso) {
-  return new Date(iso).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 const HIGH_RISK_TRIGGER = /\b(buy now|buy it now|spend now|urgent|manic|panic|overwhelmed|cannot think|can't think|cant stop|can't stop|i need it now|all in|max out|yolo|big spend|huge spend|go crazy|unstoppable|i feel invincible)\b/i
@@ -130,7 +125,6 @@ function ThinkingIndicator() {
 export default function Chat() {
   const location = useLocation()
   const navigate = useNavigate()
-  const accountTags = readAccountTags()
   const { user } = useAuth()
   const [sessionId, setSessionId] = useState(null)
   const [messages, setMessages] = useState([])
@@ -162,9 +156,6 @@ export default function Chat() {
     languageVariant: 'standard',
     evidence: [],
   })
-  // Insight selection
-  const [insights, setInsights] = useState([])
-  const [selectedInsightId, setSelectedInsightId] = useState(null)
   const [pendingLaunch, setPendingLaunch] = useState(null)
   const [launchNeedsUrlCleanup, setLaunchNeedsUrlCleanup] = useState(false)
   const [isCalmMode, setIsCalmMode] = useState(() => {
@@ -179,17 +170,6 @@ export default function Chat() {
   const userSendTimestampsRef = useRef([])
   const lastSupporterMessageIdRef = useRef(null)
 
-  // Load insights list once
-  useEffect(() => {
-    listInsights()
-      .then((d) => {
-        const list = d.insights || []
-        setInsights(list)
-        if (list.length > 0) setSelectedInsightId(list[0].id)
-      })
-      .catch(() => {})
-  }, [])
-
   useEffect(() => {
     return subscribeCalmModeChanges((snapshot) => {
       const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
@@ -197,21 +177,17 @@ export default function Chat() {
     })
   }, [])
 
-  // Parse deep-link requests from Insights page (insightId + prefill)
+  // Parse deep-link requests from Insights page (prefill only)
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const prefill = (params.get('prefill') || '').trim()
     const autoSend = params.get('autosend') === '1'
-    const rawInsightId = params.get('insightId')
-    const hasExplicitInsight = rawInsightId != null
-    const parsedInsightId = hasExplicitInsight ? Number(rawInsightId) : null
-    const insightId = Number.isFinite(parsedInsightId) ? parsedInsightId : null
-    if (!prefill && !hasExplicitInsight) return
+    if (!prefill) return
 
-    const launchKey = `${rawInsightId ?? ''}|${prefill}|${autoSend ? '1' : '0'}`
+    const launchKey = `${prefill}|${autoSend ? '1' : '0'}`
     if (processedLaunchKeyRef.current === launchKey) return
 
-    setPendingLaunch({ launchKey, prefill, insightId, hasExplicitInsight, autoSend })
+    setPendingLaunch({ launchKey, prefill, autoSend })
     setLaunchNeedsUrlCleanup(true)
   }, [location.search])
 
@@ -235,7 +211,9 @@ export default function Chat() {
             languageVariant: 'standard',
             evidence: [],
           })
-          if (latest.insight_id) setSelectedInsightId(latest.insight_id)
+          if (Boolean(latest.is_paused) && String(latest.paused_reason || '').startsWith('safety_')) {
+            activateCalmAutoMode({ reason: 'chat_pause_signal', source: 'coach_signals' })
+          }
           const { messages: msgs } = await getChatMessages(latest.id)
           setMessages(msgs)
         } else {
@@ -251,7 +229,6 @@ export default function Chat() {
             languageVariant: 'standard',
             evidence: [],
           })
-          if (session.insight_id) setSelectedInsightId(session.insight_id)
           setMessages([])
         }
       } catch (err) {
@@ -280,34 +257,14 @@ export default function Chat() {
     })
   }, [messages])
 
-  // Apply deep-link once session and insights are available
+  // Apply deep-link once session is available
   useEffect(() => {
-    if (!pendingLaunch || loading || insights.length === 0) return
+    if (!pendingLaunch || loading) return
 
     let cancelled = false
 
     async function applyLaunch() {
       if (processedLaunchKeyRef.current === pendingLaunch.launchKey) return
-
-      if (pendingLaunch.hasExplicitInsight) {
-        const exists = pendingLaunch.insightId != null && insights.some((i) => i.id === pendingLaunch.insightId)
-        if (!exists) {
-          setError('Requested insight could not be found. Please open the insight again and retry.')
-          processedLaunchKeyRef.current = pendingLaunch.launchKey
-          setPendingLaunch(null)
-          return
-        }
-      }
-
-      const targetInsight = pendingLaunch.hasExplicitInsight
-        ? pendingLaunch.insightId
-        : selectedInsightId || insights[0]?.id || null
-
-      if (targetInsight && targetInsight !== selectedInsightId) {
-        await handleNewChat(targetInsight)
-        if (cancelled) return
-        setSelectedInsightId(targetInsight)
-      }
 
       if (pendingLaunch.prefill) {
         setInput(pendingLaunch.prefill)
@@ -326,14 +283,13 @@ export default function Chat() {
     return () => {
       cancelled = true
     }
-  }, [pendingLaunch, loading, insights, selectedInsightId, chatPaused])
+  }, [pendingLaunch, loading, chatPaused])
 
-  async function handleNewChat(insightId) {
+  async function handleNewChat() {
     setLoading(true)
     setError('')
     try {
-      const body = insightId ? { insight_id: insightId } : {}
-      const { session } = await createChatSession(body)
+      const { session } = await createChatSession()
       setSessionId(session.id)
       setChatPaused(Boolean(session.is_paused))
       setPauseReason(session.paused_reason || '')
@@ -345,7 +301,6 @@ export default function Chat() {
         languageVariant: 'standard',
         evidence: [],
       })
-      if (session.insight_id) setSelectedInsightId(session.insight_id)
       setMessages([])
     } catch (err) {
       setError(err.message)
@@ -353,12 +308,6 @@ export default function Chat() {
       setLoading(false)
       inputRef.current?.focus()
     }
-  }
-
-  async function handleInsightChange(newId) {
-    const id = newId ? Number(newId) : null
-    setSelectedInsightId(id)
-    await handleNewChat(id)
   }
 
   async function sendPreparedText(rawText) {
@@ -406,6 +355,7 @@ export default function Chat() {
         setChatPaused(true)
         setPauseReason(err?.data?.pause_reason || '')
         setSafetyPause(parseSafetyPayload(err?.data || {}))
+        activateCalmAutoMode({ reason: 'chat_pause_signal', source: 'coach_signals' })
       }
       setError(err.message)
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
@@ -426,7 +376,6 @@ export default function Chat() {
     }
   }
 
-  const selectedInsight = insights.find((i) => i.id === selectedInsightId)
   const starterSuggestions = isCalmMode
     ? ['Help me focus only on essentials and give one safe step now.']
     : [
@@ -456,10 +405,8 @@ export default function Chat() {
             {!loading && !hasFinancialContext && (
               <p className="chat-header-sub chat-header-sub-warn">No money data yet. Upload a statement first.</p>
             )}
-            {!loading && hasFinancialContext && selectedInsight && (
-              <p className="chat-header-sub">
-                {friendlyAccountList(selectedInsight.accounts, accountTags, ', ')} · {formatDate(selectedInsight.created_at)}
-              </p>
+            {!loading && hasFinancialContext && (
+              <p className="chat-header-sub">Connected finance data is ready for chat.</p>
             )}
             {isCalmMode && (
               <p className="chat-calm-note">Calm mode is on. We focus on essentials and one step at a time.</p>
@@ -540,25 +487,6 @@ export default function Chat() {
       {/* ── Controls bar ── */}
       {!isCalmMode && (
       <div className="chat-controls-bar" role="group" aria-label="Chat controls">
-        {insights.length > 0 && (
-          <div className="chat-ctrl-field">
-            <label className="chat-ctrl-label" htmlFor="chat-insight-select">Summary</label>
-            <select
-              id="chat-insight-select"
-              className="chat-ctrl-select"
-              value={selectedInsightId ?? ''}
-              onChange={(e) => handleInsightChange(e.target.value || null)}
-              aria-label="Choose which summary to chat about"
-              disabled={loading}
-            >
-              {insights.map((ins) => (
-                <option key={ins.id} value={ins.id}>
-                  {friendlyAccountList(ins.accounts, accountTags, ', ') || 'Unnamed'} · {formatDate(ins.created_at)}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
         <div className="chat-ctrl-field">
           <label className="chat-ctrl-label" htmlFor="chat-language-select">Language</label>
           <select
@@ -579,7 +507,7 @@ export default function Chat() {
         </div>
         <button
           className="btn btn-ghost btn-sm chat-ctrl-new"
-          onClick={() => handleNewChat(selectedInsightId)}
+          onClick={() => handleNewChat()}
           disabled={loading}
           aria-label="Start a new chat"
         >

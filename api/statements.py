@@ -13,6 +13,7 @@ from services.combine import combine_transactions
 from services.simplify import simplify
 from services.statement_processor import process_statement
 from services.translate import translate
+from services.unified_finance import ingest_combined_transactions, rebuild_unified_snapshot
 
 statements_bp = Blueprint("statements", __name__)
 
@@ -34,6 +35,14 @@ def _process_statement_background(statement_id: int, file_path: str, original_na
 
         trx_response = process_statement(file_path)
         combined = combine_transactions([trx_response])
+        ingest_combined_transactions(
+            db,
+            user_id=user_id,
+            source_type="statement",
+            source_ref=f"statement:{statement_id}",
+            combined=combined,
+        )
+        rebuild_unified_snapshot(db, user_id=user_id)
         simplified_text = simplify(combined)
         translated_text = translate(simplified_text, language)
 

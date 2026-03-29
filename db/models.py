@@ -68,6 +68,40 @@ class Insight(Base):
     chat_sessions = relationship("FinanceChatSession", back_populates="insight")
 
 
+class UnifiedTransaction(Base):
+    __tablename__ = "unified_transactions"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    source_type = Column(String(20), nullable=False)  # absa | statement
+    source_ref = Column(String(120), nullable=False)
+    account_number = Column(String(64), nullable=True)
+    account_name = Column(String(255), nullable=True)
+    account_type = Column(String(80), nullable=True)
+    transaction_date = Column(String(32), nullable=True)
+    description = Column(Text, nullable=True)
+    amount = Column(Numeric(14, 2), nullable=True)
+    balance_after = Column(Numeric(14, 2), nullable=True)
+    fee = Column(Numeric(14, 2), nullable=True)
+    category = Column(String(80), nullable=True)
+    transfer_to_account = Column(String(64), nullable=True)
+    transfer_from_account = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UnifiedFinanceSnapshot(Base):
+    __tablename__ = "unified_finance_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    window_from = Column(String(32), nullable=False)
+    window_to = Column(String(32), nullable=False)
+    raw_combined_json = Column(Text, nullable=False)
+    summary_json = Column(Text, nullable=False)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Translation(Base):
     __tablename__ = "translations"
 

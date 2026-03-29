@@ -54,14 +54,52 @@ def _translate_via_openai(text: str, target_language: str) -> str:
 
 
 def _translate_to_english_with_fallback(text: str, source_language: str) -> str:
-    """Use shared translation service first, then fallback to OpenAI translation."""
+    """Use shared translation first and ensure safety checks receive English text."""
     try:
         translated = translate_to_english(text, source_language=source_language)
-        if translated and translated.strip():
-            return translated.strip()
+        cleaned = translated.strip() if translated else ""
+        if cleaned and _looks_english_for_safety(cleaned):
+            return cleaned
     except Exception:
         pass
-    return _translate_via_openai(text, target_language="English")
+
+    # Fallback also covers low-quality translations where non-English text leaked through.
+    fallback = _translate_via_openai(text, target_language="English")
+    return fallback.strip() if fallback else text.strip()
+
+
+def _looks_english_for_safety(text: str) -> bool:
+    """Heuristic guard so keyword-based safety checks run on English-like text."""
+    if not text or not text.strip():
+        return False
+
+    lowered = text.lower()
+    letters = [ch for ch in lowered if ch.isalpha()]
+    if not letters:
+        return False
+
+    ascii_letters = [ch for ch in letters if ch.isascii()]
+    ascii_ratio = len(ascii_letters) / len(letters)
+
+    english_markers = (
+        " i ",
+        " me ",
+        " my ",
+        " buy ",
+        " can ",
+        " should ",
+        " now ",
+        " today ",
+        " help ",
+        " want ",
+        " to ",
+        " the ",
+        " and ",
+    )
+    padded = f" {lowered} "
+    marker_hits = sum(1 for marker in english_markers if marker in padded)
+
+    return ascii_ratio >= 0.85 and marker_hits >= 1
 
 
 def _translate_from_english_with_fallback(text: str, target_language: str) -> str:

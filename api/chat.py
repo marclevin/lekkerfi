@@ -7,9 +7,11 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from db.database import SessionLocal
-from db.models import FinanceChatMessage, FinanceChatSession, Insight, User
+from db.models import FinanceChatMessage, FinanceChatSession, User
 from services.finance_chat import generate_finance_chat_reply
 from services.supporter_alerts import create_supporter_alerts
+from services.simplify import simplify
+from services.unified_finance import get_latest_unified_combined, rebuild_unified_snapshot
 
 chat_bp = Blueprint("chat", __name__)
 _logger = logging.getLogger(__name__)
@@ -19,7 +21,6 @@ def _session_payload(session: FinanceChatSession) -> dict:
     paused_at = cast(datetime | None, session.paused_at)
     return {
         "id": session.id,
-        "insight_id": session.insight_id,
         "title": session.title,
         "is_paused": bool(cast(bool | None, session.is_paused)),
         "paused_at": paused_at.isoformat() if paused_at is not None else None,
@@ -41,42 +42,21 @@ def _message_payload(message: FinanceChatMessage) -> dict:
     }
 
 
-def _latest_user_insight(user_id: int, db) -> Insight | None:
-    return (
-        db.query(Insight)
-        .filter_by(user_id=user_id)
-        .order_by(Insight.created_at.desc())
-        .first()
-    )
-
-
 @chat_bp.post("/sessions")
 @jwt_required()
 def create_chat_session():
     """
     Create a finance chat session.
-    Body: { "insight_id": 1 (optional), "title": "Budget Chat" (optional) }
-
-    If insight_id is omitted, the latest insight for the user is used.
+    Body: { "title": "Budget Chat" (optional) }
     """
     user_id = int(get_jwt_identity())
     data = request.get_json() or {}
     title = (data.get("title") or "").strip() or None
-    requested_insight_id = data.get("insight_id")
 
     db = SessionLocal()
     try:
-        insight = None
-        if requested_insight_id is not None:
-            insight = db.get(Insight, int(requested_insight_id))
-            if insight is None or cast(int, insight.user_id) != user_id:
-                return jsonify({"error": "Insight not found"}), 404
-        else:
-            insight = _latest_user_insight(user_id=user_id, db=db)
-
         session = FinanceChatSession(
             user_id=user_id,
-            insight_id=insight.id if insight else None,
             title=title,
         )
         db.add(session)
@@ -180,18 +160,6 @@ def send_chat_message(session_id: int):
                 "safety": paused_context.get("safety") if isinstance(paused_context.get("safety"), dict) else None,
             }), 423
 
-        insight = None
-        if session.insight_id is not None:
-            insight = db.get(Insight, cast(int, session.insight_id))
-            if insight is not None and cast(int, insight.user_id) != user_id:
-                return jsonify({"error": "Insight not found for this user"}), 404
-
-        # If the session has no linked insight yet, attach latest user insight if available.
-        if not insight:
-            insight = _latest_user_insight(user_id=user_id, db=db)
-            if insight:
-                session.insight_id = insight.id
-
         history = (
             db.query(FinanceChatMessage)
             .filter_by(session_id=session.id)
@@ -207,8 +175,23 @@ def send_chat_message(session_id: int):
             for h in history
         ]
 
-        raw_transactions = cast(str | None, insight.raw_transactions) if insight is not None else None
-        simplified_text = cast(str | None, insight.simplified_text) if insight is not None else None
+        unified_combined = get_latest_unified_combined(db, user_id=user_id)
+        if not (unified_combined and unified_combined.get("accounts")):
+            # Self-heal stale/missing snapshot if rows were ingested but snapshot was not refreshed.
+            unified_combined = rebuild_unified_snapshot(db, user_id=user_id)
+
+        if unified_combined and unified_combined.get("accounts"):
+            raw_transactions = json.dumps(unified_combined)
+            simplified_text = simplify(unified_combined)
+        else:
+            raw_transactions = None
+            simplified_text = None
+
+        if not raw_transactions:
+            return jsonify({
+                "error": "No finance data found yet. Please connect ABSA or upload a statement first.",
+                "has_financial_context": False,
+            }), 409
         if trusted_supporter_name is None:
             user = db.get(User, user_id)
             trusted_supporter_name = cast(str | None, user.trusted_supporter_name) if user is not None else None
@@ -317,7 +300,7 @@ def send_chat_message(session_id: int):
             "session": _session_payload(session),
             "user_message": _message_payload(user_message),
             "assistant_message": _message_payload(assistant_message),
-            "has_financial_context": bool(insight),
+            "has_financial_context": bool(raw_transactions),
             "coach_signals": coach_signals,
             "supporter_alert_ids": created_alert_ids,
             "chat_paused": bool(session.is_paused),

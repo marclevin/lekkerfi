@@ -32,6 +32,7 @@ from services.simplify import simplify as simplify_statement
 from services.statement_processor import process_statement
 from services.supporter_chat import generate_supporter_chat_reply
 from services.translate import translate as translate_statement
+from services.unified_finance import get_latest_unified_combined, rebuild_unified_snapshot
 
 supporters_bp = Blueprint("supporters", __name__)
 
@@ -136,6 +137,37 @@ def _insight_transactions(insight: Insight | None) -> list[dict]:
     try:
         combined = json.loads(insight.raw_transactions)
     except json.JSONDecodeError:
+        return []
+
+    rows: list[dict] = []
+    for acc in combined.get("accounts", []):
+        account_number = acc.get("account_number") or ""
+        for trx in acc.get("transactions", []):
+            amount = _to_decimal(trx.get("amount"))
+            rows.append({
+                "date": trx.get("date"),
+                "date_obj": _parse_dt(trx.get("date")),
+                "description": trx.get("description") or "",
+                "amount": amount,
+                "account_number": account_number,
+            })
+
+    rows.sort(key=lambda r: r.get("date") or "", reverse=True)
+    return rows
+
+
+def _unified_combined_for_user(db, user_id: int) -> dict | None:
+    combined = get_latest_unified_combined(db, user_id=user_id)
+    if combined and combined.get("accounts"):
+        return combined
+    rebuilt = rebuild_unified_snapshot(db, user_id=user_id)
+    if rebuilt and rebuilt.get("accounts"):
+        return rebuilt
+    return None
+
+
+def _combined_transactions(combined: dict | None) -> list[dict]:
+    if not combined:
         return []
 
     rows: list[dict] = []
@@ -655,13 +687,8 @@ def dashboard_users():
         payload = []
         now = datetime.utcnow()
         for user in users:
-            latest_insight = (
-                db.query(Insight)
-                .filter(Insight.user_id == user.id)
-                .order_by(Insight.created_at.desc())
-                .first()
-            )
-            tx_rows = _insight_transactions(latest_insight)
+            combined = _unified_combined_for_user(db, user.id)
+            tx_rows = _combined_transactions(combined)
 
             spend_30d = Decimal("0")
             spend_7d = Decimal("0")
@@ -693,12 +720,7 @@ def dashboard_users():
             )
             last_active = latest_chat.updated_at if latest_chat else user.created_at
 
-            summary = {}
-            if latest_insight and latest_insight.raw_transactions:
-                try:
-                    summary = json.loads(latest_insight.raw_transactions).get("summary", {})
-                except json.JSONDecodeError:
-                    summary = {}
+            summary = (combined or {}).get("summary", {}) if combined else {}
 
             current_balance = _to_decimal(summary.get("combined_current_balance"))
 
@@ -710,7 +732,7 @@ def dashboard_users():
                 "current_balance": float(current_balance),
                 "avg_30d_spend": float(spend_30d),
                 "spending_7d": float(spend_7d),
-                "risk_status": _risk_status(active_alerts, has_data=bool(latest_insight)),
+                "risk_status": _risk_status(active_alerts, has_data=bool(combined and tx_rows)),
                 "last_active": last_active.isoformat() if last_active else None,
                 "last_chat_at": latest_chat.updated_at.isoformat() if latest_chat else None,
                 "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
@@ -749,13 +771,8 @@ def dashboard_user_details(user_id: int):
             .first()
         )
 
-        latest_insight = (
-            db.query(Insight)
-            .filter(Insight.user_id == user.id)
-            .order_by(Insight.created_at.desc())
-            .first()
-        )
-        tx_rows = _insight_transactions(latest_insight)
+        combined = _unified_combined_for_user(db, user.id)
+        tx_rows = _combined_transactions(combined)
         transactions = [
             {
                 "date": row.get("date"),
@@ -1224,24 +1241,8 @@ def send_supporter_chat_message(user_id: int):
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        latest_insight = (
-            db.query(Insight)
-            .filter_by(user_id=user_id)
-            .order_by(Insight.created_at.desc())
-            .first()
-        )
-        raw_transactions = None
-        simplified_text = None
-        if latest_insight:
-            try:
-                raw_transactions = (
-                    json.loads(latest_insight.raw_transactions)
-                    if latest_insight.raw_transactions
-                    else None
-                )
-            except Exception:
-                pass
-            simplified_text = latest_insight.simplified_text
+        raw_transactions = _unified_combined_for_user(db, user_id)
+        simplified_text = simplify_statement(raw_transactions) if raw_transactions else None
 
         history_rows = (
             db.query(SupporterChatMessage)
