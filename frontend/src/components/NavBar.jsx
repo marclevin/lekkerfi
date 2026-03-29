@@ -36,7 +36,10 @@ export default function NavBar({ showReadAloudIcon = false, onOpenReadAloud }) {
 
   return (
     <nav className="navbar" aria-label="Top navigation">
-      <Link to="/" className="navbar-brand" aria-label="Go to home">LekkerFi</Link>
+      <Link to="/" className="navbar-brand" aria-label="Go to home">
+        <span className="navbar-brand-lekker">Lekker</span>
+        <span className="navbar-brand-fi">Fi</span>
+      </Link>
 
       {user && (
         <div className="navbar-actions">

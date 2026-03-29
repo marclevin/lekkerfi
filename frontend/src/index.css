@@ -431,11 +431,21 @@ body.calm-mode main[data-user-role="user"] .home-onboarding {
 .navbar-brand {
   font-size: 1.1rem;
   font-weight: 800;
-  color: var(--green) !important;
   text-decoration: none;
   letter-spacing: -0.03em;
+  display: inline-flex;
+  align-items: baseline;
 }
 
+.navbar-brand:hover { text-decoration: none; }
+
+.navbar-brand-lekker {
+  color: var(--white);
+}
+
+.navbar-brand-fi {
+  color: var(--green);
+}
 .navbar-actions {
   display: flex;
   align-items: center;
