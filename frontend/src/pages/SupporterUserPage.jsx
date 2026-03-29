@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   addSupporterNote,
+  deleteSupporterUserAbsaSession,
   getSupporterChatMessages,
   getSupporterDashboardUsers,
   getSupporterUserDetails,
   getUserFinanceChat,
   injectSupporterMessage,
+  listSupporterUserAbsaSessions,
   resetSupporterChatMessages,
   sendSupporterChatMessage,
   setSupporterUserChatPause,
+  startSupporterUserAbsaSession,
+  supporterUploadStatement,
+  translateMessage,
   upsertUserSpendingLimit,
 } from '../api/client'
 import {
@@ -30,16 +35,24 @@ const SUPPORTER_CHAT_SUGGESTIONS = [
   'How can I coach them without taking away independence?',
 ]
 
+function resolveConcernFromSearch(search, fallback = 'snapshot') {
+  const concern = new URLSearchParams(search).get('concern')
+  if (concern === 'chat-controls') return 'chat_controls'
+  if (concern === 'finance-controls') return 'finance_controls'
+  return fallback
+}
+
 export default function SupporterUserPage() {
   const { userId: userIdParam } = useParams()
   const userId = Number(userIdParam)
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [user, setUser] = useState(null)
   const [details, setDetails] = useState(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [activeConcern, setActiveConcern] = useState('snapshot')
+  const [activeConcern, setActiveConcern] = useState(() => resolveConcernFromSearch(location.search))
 
   const [noteText, setNoteText] = useState('')
   const [noteSaved, setNoteSaved] = useState(false)
@@ -52,7 +65,18 @@ export default function SupporterUserPage() {
   const [pauseReasonText, setPauseReasonText] = useState('')
   const [financeChat, setFinanceChat] = useState(null)
   const [injectText, setInjectText] = useState('')
+  const [translatedInjectText, setTranslatedInjectText] = useState('')
+  const [injectPreviewSource, setInjectPreviewSource] = useState('')
+  const [injectPreviewLang, setInjectPreviewLang] = useState('english')
+  const [previewingInject, setPreviewingInject] = useState(false)
   const [injecting, setInjecting] = useState(false)
+
+  const [uploadFile, setUploadFile] = useState(null)
+  const [uploadLanguage, setUploadLanguage] = useState('english')
+  const [uploadingStatement, setUploadingStatement] = useState(false)
+
+  const [absaSessions, setAbsaSessions] = useState([])
+  const [absaBusy, setAbsaBusy] = useState(false)
 
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
@@ -60,7 +84,7 @@ export default function SupporterUserPage() {
   const [chatLoading, setChatLoading] = useState(false)
   const [chatSending, setChatSending] = useState(false)
   const chatEndRef = useRef(null)
-
+  const uploadInputRef = useRef(null)
 
   const fetchDetails = useCallback(async () => {
     const data = await getSupporterUserDetails(userId)
@@ -86,6 +110,20 @@ export default function SupporterUserPage() {
     }
   }, [userId])
 
+  const fetchFinanceChat = useCallback(async () => {
+    const data = await getUserFinanceChat(userId)
+    setFinanceChat(data)
+  }, [userId])
+
+  const fetchAbsaSessions = useCallback(async () => {
+    const data = await listSupporterUserAbsaSessions(userId)
+    setAbsaSessions(data.sessions || [])
+  }, [userId])
+
+  useEffect(() => {
+    setActiveConcern((current) => resolveConcernFromSearch(location.search, current))
+  }, [location.search])
+
   // Resolve user name from users list
   useEffect(() => {
     getSupporterDashboardUsers()
@@ -104,8 +142,9 @@ export default function SupporterUserPage() {
     setError('')
     fetchDetails().catch((e) => setError(e.message))
     fetchChat().catch((e) => setError(e.message))
-    getUserFinanceChat(userId).then(setFinanceChat).catch(() => {})
-  }, [fetchDetails, fetchChat, userId])
+    fetchFinanceChat().catch(() => {})
+    fetchAbsaSessions().catch(() => {})
+  }, [fetchAbsaSessions, fetchChat, fetchDetails, fetchFinanceChat, userId])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -116,39 +155,84 @@ export default function SupporterUserPage() {
     const timer = setInterval(() => {
       fetchDetails().catch(() => {})
       fetchChat().catch(() => {})
+      fetchFinanceChat().catch(() => {})
     }, 10000)
     return () => clearInterval(timer)
-  }, [fetchDetails, fetchChat])
+  }, [fetchChat, fetchDetails, fetchFinanceChat])
 
   const signals = useMemo(() => {
     if (!details) return null
     return computeUserSignals(details)
   }, [details])
 
+  const targetInjectLanguage = user?.preferred_language || details?.user?.preferred_language || 'english'
+  const targetInjectLanguageLabel = LANGUAGES.find((l) => l.value === targetInjectLanguage)?.label || targetInjectLanguage
+
+  const injectPreviewReady =
+    injectText.trim().length > 0
+    && injectPreviewSource === injectText.trim()
+    && injectPreviewLang === targetInjectLanguage
+    && translatedInjectText.trim().length > 0
+
+  useEffect(() => {
+    if (injectPreviewSource && injectText.trim() !== injectPreviewSource) {
+      setTranslatedInjectText('')
+      setInjectPreviewSource('')
+    }
+  }, [injectText, injectPreviewSource])
+
   const careSignals = useMemo(() => {
     if (!details?.management) return []
-    const signals = []
+    const coachingSignals = []
     const management = details.management
     const pauseState = details.chat_pause
-    if (pauseState?.is_paused) signals.push('Chat currently paused. Confirm supporter decision and safe restart plan before unpausing.')
-    if ((management.unread_alert_count || 0) > 0) signals.push(`There are ${management.unread_alert_count} unread alerts needing triage.`)
-    if ((management.spike_transaction_count_30d || 0) > 0) signals.push('Recent spend spikes detected. Use calm check-in script before discussing limits.')
+    if (pauseState?.is_paused) coachingSignals.push('Chat currently paused. Confirm supporter decision and safe restart plan before unpausing.')
+    if ((management.unread_alert_count || 0) > 0) coachingSignals.push(`There are ${management.unread_alert_count} unread alerts needing triage.`)
+    if ((management.spike_transaction_count_30d || 0) > 0) coachingSignals.push('Recent spend spikes detected. Use calm check-in script before discussing limits.')
     if ((management.spending_7d || 0) > (management.avg_daily_spend_30d || 0) * 10 && (management.avg_daily_spend_30d || 0) > 0) {
-      signals.push('Seven-day spending is elevated versus normal baseline. Prioritize short, concrete budgeting steps.')
+      coachingSignals.push('Seven-day spending is elevated versus normal baseline. Prioritize short, concrete budgeting steps.')
     }
-    if (!management.last_login_at) signals.push('No recent login activity recorded. Consider direct outreach to confirm account access and wellbeing.')
-    return signals.slice(0, 4)
+    if (!management.last_login_at) coachingSignals.push('No recent login activity recorded. Consider direct outreach to confirm account access and wellbeing.')
+    return coachingSignals.slice(0, 4)
   }, [details])
 
+  async function handlePreviewInjectTranslation() {
+    const text = injectText.trim()
+    if (!text) return
+    setPreviewingInject(true)
+    try {
+      if (targetInjectLanguage === 'english') {
+        setTranslatedInjectText(text)
+      } else {
+        const data = await translateMessage(text, targetInjectLanguage)
+        setTranslatedInjectText((data.translated || text).trim())
+      }
+      setInjectPreviewSource(text)
+      setInjectPreviewLang(targetInjectLanguage)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setPreviewingInject(false)
+    }
+  }
+
   async function handleInjectMessage() {
-    if (!injectText.trim()) return
+    if (!injectText.trim() || !injectPreviewReady) return
     setInjecting(true)
     try {
-      await injectSupporterMessage(userId, injectText.trim())
+      await injectSupporterMessage(userId, injectText.trim(), {
+        translatedMessage: translatedInjectText,
+        targetLanguage: targetInjectLanguage,
+      })
       setInjectText('')
-      getUserFinanceChat(userId).then(setFinanceChat).catch(() => {})
-    } catch (e) { setError(e.message) }
-    finally { setInjecting(false) }
+      setTranslatedInjectText('')
+      setInjectPreviewSource('')
+      await fetchFinanceChat()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setInjecting(false)
+    }
   }
 
   async function handleToggleChatPause(action) {
@@ -157,8 +241,12 @@ export default function SupporterUserPage() {
       await setSupporterUserChatPause(userId, action, pauseReasonText.trim())
       setPauseReasonText('')
       await fetchDetails()
-    } catch (e) { setError(e.message) }
-    finally { setSaving(false) }
+      await fetchFinanceChat()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleSaveLimits() {
@@ -172,8 +260,11 @@ export default function SupporterUserPage() {
         min_balance_threshold: limits.min_balance_threshold === '' ? null : Number(limits.min_balance_threshold),
       })
       await fetchDetails()
-    } catch (e) { setError(e.message) }
-    finally { setSaving(false) }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleSaveNote() {
@@ -185,8 +276,49 @@ export default function SupporterUserPage() {
       await fetchDetails()
       setNoteSaved(true)
       setTimeout(() => setNoteSaved(false), 2200)
-    } catch (e) { setError(e.message) }
-    finally { setSaving(false) }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleUploadStatement() {
+    if (!uploadFile) return
+    setUploadingStatement(true)
+    try {
+      await supporterUploadStatement(userId, uploadFile, uploadLanguage)
+      setUploadFile(null)
+      await fetchDetails()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setUploadingStatement(false)
+    }
+  }
+
+  async function handleStartAbsaSession() {
+    setAbsaBusy(true)
+    try {
+      await startSupporterUserAbsaSession(userId)
+      await fetchAbsaSessions()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setAbsaBusy(false)
+    }
+  }
+
+  async function handleDeleteAbsaSession(sessionId) {
+    setAbsaBusy(true)
+    try {
+      await deleteSupporterUserAbsaSession(userId, sessionId)
+      await fetchAbsaSessions()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setAbsaBusy(false)
+    }
   }
 
   async function handleSendSupporterChat(prefill) {
@@ -197,8 +329,11 @@ export default function SupporterUserPage() {
       const data = await sendSupporterChatMessage(userId, text, chatLanguage)
       setChatMessages((prev) => ([...prev, data.supporter_message, data.assistant_message].filter(Boolean)))
       setChatInput('')
-    } catch (e) { setError(e.message) }
-    finally { setChatSending(false) }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setChatSending(false)
+    }
   }
 
   async function handleResetSupporterChat() {
@@ -208,12 +343,16 @@ export default function SupporterUserPage() {
       await resetSupporterChatMessages(userId)
       setChatMessages([])
       setChatInput('')
-    } catch (e) { setError(e.message) }
-    finally { setChatSending(false) }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setChatSending(false)
+    }
   }
 
-  const displayName = user?.full_name || `User ${userId}`
+  const displayName = user?.full_name || details?.user?.full_name || `User ${userId}`
   const firstName = displayName.split(' ')[0]
+  const uploadFileSummary = uploadFile ? `${uploadFile.name} (${Math.max(1, Math.round(uploadFile.size / 1024))} KB)` : ''
 
   const helpfulShieldItems = useMemo(() => ([
     {
@@ -282,7 +421,7 @@ export default function SupporterUserPage() {
       {details && (
         <div className="card supporter-care-panel">
           <div className="supporter-concern-nav" role="tablist" aria-label="User care concerns">
-            {['snapshot', 'playbook', 'controls', 'history', 'ai'].map((tab) => (
+            {['snapshot', 'playbook', 'chat_controls', 'finance_controls', 'history', 'ai'].map((tab) => (
               <button
                 key={tab}
                 className={`supporter-concern-tab${activeConcern === tab ? ' active' : ''}`}
@@ -290,12 +429,18 @@ export default function SupporterUserPage() {
                 aria-selected={activeConcern === tab}
                 onClick={() => setActiveConcern(tab)}
               >
-                {{ snapshot: 'Signals & profile', playbook: 'Care playbook', controls: 'Controls', history: 'History', ai: 'AI finance copilot' }[tab]}
+                {{
+                  snapshot: 'Signals & profile',
+                  playbook: 'Care playbook',
+                  chat_controls: 'Chat Controls',
+                  finance_controls: 'Finance Controls',
+                  history: 'History',
+                  ai: 'AI finance copilot',
+                }[tab]}
               </button>
             ))}
           </div>
 
-          {/* ── Signals & profile ── */}
           {activeConcern === 'snapshot' && (
             <section className="supporter-concern-panel" role="tabpanel">
               {signals && (
@@ -367,7 +512,6 @@ export default function SupporterUserPage() {
             </section>
           )}
 
-          {/* ── Care playbook ── */}
           {activeConcern === 'playbook' && (
             <section className="supporter-concern-panel" role="tabpanel">
               <div className="supporter-care-playbook">
@@ -403,81 +547,181 @@ export default function SupporterUserPage() {
             </section>
           )}
 
-          {/* ── Controls ── */}
-          {activeConcern === 'controls' && (
+          {activeConcern === 'chat_controls' && (
+            <section className="supporter-concern-panel" role="tabpanel">
+              <section className="supporter-care-section supp-chat-section">
+                <div className="supp-chat-head">
+                  <div>
+                    <h3>Unified chat controls</h3>
+                    <p className="supp-chat-desc">One chat window for review and sending to {firstName}, with language preview and pause controls below.</p>
+                  </div>
+                  <span className={`status-badge ${details.chat_pause?.is_paused ? 'status-warning' : 'status-stable'}`}>
+                    {details.chat_pause?.is_paused ? 'Paused' : 'Active'}
+                  </span>
+                </div>
+
+                {financeChat?.messages?.length > 0 ? (
+                  <div className="supp-chat-messages" aria-live="polite">
+                    {financeChat.messages.slice(-12).map((m) => (
+                      <div key={m.id} className={`supp-chat-msg supp-chat-msg-${m.role === 'supporter' ? 'supporter' : 'assistant'}`}>
+                        <span className="supp-chat-msg-label">{m.role === 'user' ? firstName : m.role === 'supporter' ? 'You' : 'AI'}</span>
+                        <div className="supp-chat-msg-text chat-markdown">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text || ''}</ReactMarkdown>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted" style={{ marginTop: 8 }}>No chat messages yet.</p>
+                )}
+
+                <div className="sfc-composer">
+                  <textarea
+                    className="supp-chat-input"
+                    value={injectText}
+                    onChange={(e) => setInjectText(e.target.value)}
+                    placeholder={`Type a message for ${firstName}...`}
+                    rows={2}
+                  />
+
+                  <div className="sfc-controls-row" role="group" aria-label="Unified chat controls">
+                    <button
+                      className="supp-chat-send"
+                      onClick={handleInjectMessage}
+                      disabled={injecting || !injectPreviewReady}
+                      aria-label="Send message"
+                      title="Send message"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path d="M3 11.5L21 3L12.5 21L10.2 13.8L3 11.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={handlePreviewInjectTranslation}
+                      disabled={previewingInject || !injectText.trim()}
+                    >
+                      {previewingInject ? 'Preparing preview...' : `Preview in ${targetInjectLanguageLabel}`}
+                    </button>
+
+                    <button
+                      className={`btn btn-sm ${details.chat_pause?.is_paused ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => handleToggleChatPause(details.chat_pause?.is_paused ? 'unpause' : 'pause')}
+                      disabled={saving}
+                    >
+                      {details.chat_pause?.is_paused ? 'Unpause chat' : 'Pause chat'}
+                    </button>
+
+                    <input
+                      className="sfc-reason-input"
+                      value={pauseReasonText}
+                      onChange={(e) => setPauseReasonText(e.target.value)}
+                      placeholder="Optional reason"
+                      aria-label="Optional pause reason"
+                    />
+                  </div>
+
+                  {!injectPreviewReady && injectText.trim().length > 0 && (
+                    <p className="sfc-preview-hint">Preview first, then send.</p>
+                  )}
+
+                  {injectPreviewReady && (
+                    <div className="sfc-translation-preview">
+                      <p><strong>Original:</strong> {injectPreviewSource}</p>
+                      <p><strong>Translated ({targetInjectLanguageLabel}):</strong> {translatedInjectText}</p>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </section>
+          )}
+
+          {activeConcern === 'finance_controls' && (
             <section className="supporter-concern-panel" role="tabpanel">
               <div className="supporter-care-columns">
                 <div className="supporter-care-col">
                   <section className="supporter-care-section">
-                    <h3>Banking Controls</h3>
-                    <p className="muted">Upload a statement on behalf of {displayName.split(' ')[0]}, or manage their ABSA connection.</p>
-                    <Link to={`/supporter/users/${userId}/banking`} className="btn btn-secondary btn-sm" style={{ marginTop: 8 }}>
-                      Open banking controls →
-                    </Link>
+                    <h3>Upload statement</h3>
+                    <p className="muted">Upload a statement for {firstName} without leaving this page.</p>
+                    <input
+                      ref={uploadInputRef}
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png,.webp"
+                      onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                      style={{ display: 'none' }}
+                    />
+
+                    <button
+                      type="button"
+                      className={`supporter-upload-zone${uploadFile ? ' has-file' : ''}`}
+                      onClick={() => uploadInputRef.current?.click()}
+                    >
+                      <span className="supporter-upload-icon" aria-hidden="true">📄</span>
+                      <span className="supporter-upload-filename">
+                        {uploadFile ? uploadFile.name : 'Choose statement file'}
+                      </span>
+                      <span className="supporter-upload-hint">PDF, JPG, PNG, WEBP</span>
+                    </button>
+
+                    {uploadFileSummary && <p className="supporter-upload-meta">{uploadFileSummary}</p>}
+
+                    <div className="supporter-upload-controls">
+                      <label className="supporter-upload-lang-label">
+                        Statement language
+                        <select value={uploadLanguage} onChange={(e) => setUploadLanguage(e.target.value)}>
+                          {LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                        </select>
+                      </label>
+
+                      <button className="btn btn-secondary btn-sm" onClick={handleUploadStatement} disabled={!uploadFile || uploadingStatement}>
+                        {uploadingStatement ? 'Uploading...' : 'Upload statement'}
+                      </button>
+
+                      {uploadFile && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => setUploadFile(null)} disabled={uploadingStatement}>
+                          Clear
+                        </button>
+                      )}
+                    </div>
                   </section>
 
                   <section className="supporter-care-section">
-                    <h3>Chat Control</h3>
-                    <div className="supporter-chat-control">
-                      <p>Current state: <strong>{details.chat_pause?.is_paused ? 'Paused' : 'Active'}</strong></p>
-                      {details.chat_pause?.paused_reason && <p>Reason: {details.chat_pause.paused_reason}</p>}
-                      {details.chat_pause?.paused_at && <p>Paused at: {formatDateTime(details.chat_pause.paused_at)}</p>}
-                      <textarea
-                        className="supporter-note-input"
-                        value={pauseReasonText}
-                        onChange={(e) => setPauseReasonText(e.target.value)}
-                        placeholder="Optional reason shown to user"
-                        rows={2}
-                      />
-                      <div className="supporter-alert-actions">
-                        {!details.chat_pause?.is_paused ? (
-                          <button className="btn btn-secondary btn-sm" onClick={() => handleToggleChatPause('pause')} disabled={saving}>Pause chat</button>
-                        ) : (
-                          <button className="btn btn-primary btn-sm" onClick={() => handleToggleChatPause('unpause')} disabled={saving}>Unpause chat</button>
-                        )}
-                      </div>
+                    <h3>ABSA connect session</h3>
+                    <p className="muted">Start ABSA connection for this user and manage saved sessions.</p>
+                    <div className="supporter-alert-actions">
+                      <button className="btn btn-secondary btn-sm" onClick={handleStartAbsaSession} disabled={absaBusy}>
+                        {absaBusy ? 'Starting...' : 'Connect ABSA for user'}
+                      </button>
                     </div>
+
+                    {absaSessions.length > 0 ? (
+                      <div className="supporter-absa-session-list" role="list">
+                        {absaSessions.map((session) => (
+                          <div className="supporter-absa-session-row" role="listitem" key={session.id}>
+                            <div>
+                              <p><strong>Session #{session.id}</strong> · {session.status}</p>
+                              <p className="muted">Created: {formatDateTime(session.created_at)}</p>
+                            </div>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => handleDeleteAbsaSession(session.id)}
+                              disabled={absaBusy}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="muted" style={{ marginTop: 8 }}>No ABSA sessions for this user yet.</p>
+                    )}
                   </section>
                 </div>
 
                 <div className="supporter-care-col">
                   <section className="supporter-care-section">
-                    <h3>User's Finance Chat</h3>
-                    <p className="muted">Read-only view of {displayName.split(' ')[0]}'s chat with LekkerFi AI.</p>
-                    {financeChat?.messages?.length > 0 ? (
-                      <div className="supporter-finance-chat-log">
-                        {financeChat.messages.slice(-12).map((m) => (
-                          <div key={m.id} className={`sfc-msg sfc-msg-${m.role}`}>
-                            <span className="sfc-role">{m.role === 'user' ? displayName.split(' ')[0] : m.role === 'supporter' ? 'You' : 'AI'}</span>
-                            <div className="sfc-text chat-markdown">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text || ''}</ReactMarkdown>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="muted" style={{ marginTop: 8 }}>No chat messages yet.</p>
-                    )}
-                    <div className="sfc-inject-row">
-                      <textarea
-                        className="supporter-note-input"
-                        value={injectText}
-                        onChange={(e) => setInjectText(e.target.value)}
-                        placeholder="Send a message into their chat…"
-                        rows={2}
-                      />
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={handleInjectMessage}
-                        disabled={injecting || !injectText.trim()}
-                      >
-                        {injecting ? 'Sending…' : 'Send to chat'}
-                      </button>
-                    </div>
-                  </section>
-
-                  <section className="supporter-care-section">
-                    <h3>Spending Limits</h3>
+                    <h3>Spending limits</h3>
                     <div className="supporter-limit-grid">
                       <label>Daily limit<input type="number" value={limits.daily_spend_limit} onChange={(e) => setLimits((p) => ({ ...p, daily_spend_limit: e.target.value }))} /></label>
                       <label>Weekly limit<input type="number" value={limits.weekly_spend_limit} onChange={(e) => setLimits((p) => ({ ...p, weekly_spend_limit: e.target.value }))} /></label>
@@ -491,7 +735,6 @@ export default function SupporterUserPage() {
             </section>
           )}
 
-          {/* ── History ── */}
           {activeConcern === 'history' && (
             <section className="supporter-concern-panel" role="tabpanel">
               <section className="supporter-care-section">
@@ -518,7 +761,6 @@ export default function SupporterUserPage() {
             </section>
           )}
 
-          {/* ── AI finance copilot ── */}
           {activeConcern === 'ai' && (
             <section className="supporter-concern-panel" role="tabpanel">
               <section className="supporter-care-section supp-chat-section">

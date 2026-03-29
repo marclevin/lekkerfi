@@ -29,7 +29,8 @@ def _linked_supporter_ids(db, user_id: int) -> set[int]:
 
 def _build_alert_candidates(coach_signals: dict) -> list[dict]:
     alerts = []
-    safe_to_spend = _to_decimal(coach_signals.get("safe_to_spend"))
+    safe_to_spend_raw = coach_signals.get("safe_to_spend")
+    safe_to_spend = None if safe_to_spend_raw is None else _to_decimal(safe_to_spend_raw)
     runout = bool(coach_signals.get("runout_before_payday"))
     anomaly_count = int(coach_signals.get("anomaly_count") or 0)
     days_to_payday = coach_signals.get("days_to_payday")
@@ -57,24 +58,25 @@ def _build_alert_candidates(coach_signals: dict) -> list[dict]:
             },
         })
 
-    if safe_to_spend <= Decimal("0"):
-        alerts.append({
-            "alert_type": "low_balance",
-            "severity": "critical",
-            "safe_to_spend": safe_to_spend,
-            "metadata": {
-                "message": "Safe-to-spend is at or below zero.",
-            },
-        })
-    elif safe_to_spend <= Decimal("500"):
-        alerts.append({
-            "alert_type": "low_balance",
-            "severity": "warning",
-            "safe_to_spend": safe_to_spend,
-            "metadata": {
-                "message": "Safe-to-spend is below R500.",
-            },
-        })
+    if safe_to_spend is not None:
+        if safe_to_spend <= Decimal("0"):
+            alerts.append({
+                "alert_type": "low_balance",
+                "severity": "critical",
+                "safe_to_spend": safe_to_spend,
+                "metadata": {
+                    "message": "Safe-to-spend is at or below zero.",
+                },
+            })
+        elif safe_to_spend <= Decimal("500"):
+            alerts.append({
+                "alert_type": "low_balance",
+                "severity": "warning",
+                "safe_to_spend": safe_to_spend,
+                "metadata": {
+                    "message": "Safe-to-spend is below R500.",
+                },
+            })
 
     if anomaly_count > 0:
         alerts.append({

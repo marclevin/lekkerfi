@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   getNotifications, getWeeklyWin, listInsights, listMySuporters,
-  listMyUsers, listStatements, markNotificationRead, sendNotification, translateMessage, visualizeInsight,
+  listMyUsers, listStatements, markNotificationRead,
+  sendNotification, translateMessage, visualizeInsight,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { activateCalmAutoMode, readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
@@ -28,6 +29,39 @@ function greeting() {
 function todayLabel() {
   return new Date().toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' })
 }
+
+function buildHomeEssentialsMock() {
+  return [
+    {
+      key: 'rent_housing',
+      icon: '🏠',
+      title: 'Rent and housing',
+      order: 1,
+      monthlyTarget: 3200,
+      weeklyTarget: 800,
+      note: 'Keep your housing costs first before non-essential spending.',
+    },
+    {
+      key: 'food_groceries',
+      icon: '🍳',
+      title: 'Food and groceries',
+      order: 2,
+      monthlyTarget: 1800,
+      weeklyTarget: 450,
+      note: 'Plan basic food needs first, then review non-essential purchases.',
+    },
+    {
+      key: 'transport_fuel',
+      icon: '🚌',
+      title: 'Transport and fuel',
+      order: 3,
+      monthlyTarget: 1250,
+      weeklyTarget: 320,
+      note: 'Protect transport costs for work, school, and essential travel.',
+    },
+  ]
+}
+
 
 // ── Nudge card (caretaker message at top) ────────────────────────────────────
 
@@ -304,7 +338,6 @@ function SupporterCard({ supporter, notifs, onNewNotif, preferredLanguage }) {
         <div className="sc-hub-identity">
           <span className="sc-hub-name">
             {supporter.display_name}
-            {supporter.is_registered && <span className="sc-reg-badge">Active</span>}
           </span>
           <span className="sc-hub-role">Your trusted supporter</span>
           {supporter.contact && <span className="sc-hub-contact">{supporter.contact}</span>}
@@ -494,7 +527,6 @@ function SupportCircle({ userId, preferredLanguage }) {
     <section className="card sc-section">
       <div className="sc-header">
         <p className="section-label">Your Support Hub</p>
-        <button className="btn btn-ghost btn-sm" onClick={() => navigate('/profile')}>+ Add</button>
       </div>
       {supporters.map((s) => (
         <SupporterCard
@@ -510,6 +542,10 @@ function SupportCircle({ userId, preferredLanguage }) {
 }
 
 function CalmEssentialsPanel({ onChat }) {
+  const items = buildHomeEssentialsMock()
+  const totalMonthly = items.reduce((sum, item) => sum + Number(item.monthlyTarget || 0), 0)
+  const totalWeekly = items.reduce((sum, item) => sum + Number(item.weeklyTarget || 0), 0)
+
   return (
     <section className="card calm-essentials-panel" aria-label="Essentials card">
       <div className="tax-shield-head">
@@ -517,13 +553,25 @@ function CalmEssentialsPanel({ onChat }) {
           <p className="section-label">Essentials</p>
           <h2 className="tax-shield-title">Essentials card</h2>
         </div>
-        <span className="status-badge status-info">Prototype</span>
+        <span className="status-badge status-info">Demo content</span>
       </div>
-      <p className="calm-essentials-copy">Focus on these categories first.</p>
+      <p className="calm-essentials-copy">Focus on these essentials first.</p>
+      <div className="calm-essentials-metrics" role="status" aria-label="Demo essentials metrics">
+        <span>{items.length} categories</span>
+        <span>{fmt(totalWeekly)} weekly target</span>
+        <span>{fmt(totalMonthly)} monthly target</span>
+      </div>
       <div className="calm-essentials-list" role="list" aria-label="Essential categories">
-        <span role="listitem">🏠 Rent and housing</span>
-        <span role="listitem">🍳 Food and groceries</span>
-        <span role="listitem">🚌 Transport and fuel</span>
+        {items.map((item) => (
+          <div key={item.key} className="calm-essentials-item" role="listitem">
+            <div className="calm-essentials-item-top">
+              <span className="calm-essentials-item-title">{item.icon} {item.order}. {item.title}</span>
+              <span className="calm-essentials-item-amount">{fmt(item.monthlyTarget)}/mo</span>
+            </div>
+            <span className="calm-essentials-item-note">{item.note}</span>
+            <span className="calm-essentials-item-sub">Weekly target: {fmt(item.weeklyTarget)}</span>
+          </div>
+        ))}
       </div>
       <div className="action-banner-btns">
         <button className="btn btn-primary" onClick={onChat}>
@@ -560,7 +608,6 @@ function TaxShieldSection() {
           <p className="section-label">Reminder Dashboard</p>
           <h2 className="tax-shield-title">Helpful reminders dashboard</h2>
         </div>
-        <span className="status-badge status-info">Prototype</span>
       </div>
       <div className="tax-shield-grid">
         {mockCards.map((card) => (
@@ -587,7 +634,7 @@ export default function Home() {
   const [weeklyWin, setWeeklyWin] = useState(null)
   const [managedUsers, setManagedUsers] = useState(null)
   const [hasPendingStatement, setHasPendingStatement] = useState(false)
-  const [activeHomeTab, setActiveHomeTab] = useState('overview')
+  const [activeHomeTab, setActiveHomeTab] = useState('glance')
   const [isCalmMode, setIsCalmMode] = useState(() => {
     const fromBody = document.body.classList.contains('calm-mode')
     const fromStorage = readStoredBoolean(CALM_MODE_KEY, false)
@@ -637,7 +684,6 @@ export default function Home() {
     return subscribeCalmModeChanges((snapshot) => {
       const active = snapshot.override ? snapshot.manual : (snapshot.manual || snapshot.auto)
       setIsCalmMode(Boolean(active))
-      if (active) setActiveHomeTab('hub')
     })
   }, [])
 
@@ -709,33 +755,12 @@ export default function Home() {
           <button
             type="button"
             role="tab"
-            aria-selected={activeHomeTab === 'overview'}
-            className={`home-tab-btn${activeHomeTab === 'overview' ? ' active' : ''}`}
-            onClick={() => setActiveHomeTab('overview')}
-          >
-            {isCalmMode ? 'Essentials' : 'Overview'}
-          </button>
-          {isCalmMode ? (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeHomeTab === 'shield'}
-            className={`home-tab-btn${activeHomeTab === 'shield' ? ' active' : ''}`}
-            onClick={() => setActiveHomeTab('shield')}
-          >
-            Important Reminder
-          </button>
-          ) : (
-          <button
-            type="button"
-            role="tab"
             aria-selected={activeHomeTab === 'glance'}
             className={`home-tab-btn${activeHomeTab === 'glance' ? ' active' : ''}`}
             onClick={() => setActiveHomeTab('glance')}
           >
             Money at a glance
           </button>
-          )}
           <button
             type="button"
             role="tab"
@@ -743,9 +768,8 @@ export default function Home() {
             className={`home-tab-btn${activeHomeTab === 'hub' ? ' active' : ''}`}
             onClick={() => setActiveHomeTab('hub')}
           >
-            {isCalmMode ? 'Support Hub' : 'Supporter hub'}
+            Supporter Hub
           </button>
-          {!isCalmMode && (
           <button
             type="button"
             role="tab"
@@ -755,7 +779,24 @@ export default function Home() {
           >
             Helpful reminders
           </button>
-          )}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHomeTab === 'essentials'}
+            className={`home-tab-btn${activeHomeTab === 'essentials' ? ' active' : ''}`}
+            onClick={() => setActiveHomeTab('essentials')}
+          >
+            Essentials Hub
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected="false"
+            className="home-tab-btn"
+            onClick={() => navigate('/limits')}
+          >
+            Spending limits
+          </button>
         </div>
       )}
 
@@ -810,7 +851,7 @@ export default function Home() {
       )}
 
       {/* ── No insights yet ── */}
-      {insights?.length === 0 && !isSupporter && activeHomeTab === 'overview' && !isCalmMode && (
+      {insights?.length === 0 && !isSupporter && activeHomeTab === 'glance' && (
         <div className="home-onboarding">
           <p className="section-label">How it works</p>
           <div className="hiw-grid">
@@ -837,16 +878,7 @@ export default function Home() {
       )}
 
       {/* ── Financial snapshot (stats only) ── */}
-      {hasInsights && (!isSupporter ? (!isCalmMode && activeHomeTab === 'overview') : true) && (
-        <FinancialSnapshot
-          latestInsight={latestInsight}
-          summary={viz?.summary}
-          vizLoading={vizLoading}
-          onViewAll={() => navigate('/insights')}
-        />
-      )}
-
-      {!isSupporter && !isCalmMode && activeHomeTab === 'glance' && (
+      {!isSupporter && activeHomeTab === 'glance' && (
         hasInsights ? (
           <FinancialSnapshot
             latestInsight={latestInsight}
@@ -862,22 +894,15 @@ export default function Home() {
         )
       )}
 
+      {!isSupporter && activeHomeTab === 'essentials' && (
+        <CalmEssentialsPanel
+          onChat={() => navigate('/chat?prefill=Help me focus on rent, food, and transport only. Give me one safe step for today.&autosend=1')}
+        />
+      )}
+
       {/* ── Support circle ── */}
-      {!isSupporter && isCalmMode && activeHomeTab === 'overview' && (
-        <CalmEssentialsPanel
-          onChat={() => navigate('/chat?prefill=Help me focus on rent, food, and transport only. Give me one safe step for today.&autosend=1')}
-        />
-      )}
-      {!isSupporter && isCalmMode && activeHomeTab === 'shield' && <TaxShieldSection />}
-      {!isSupporter && isCalmMode && activeHomeTab === 'hub' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
-      {!isSupporter && !isCalmMode && activeHomeTab === 'overview' && (
-        <CalmEssentialsPanel
-          onChat={() => navigate('/chat?prefill=Help me focus on rent, food, and transport only. Give me one safe step for today.&autosend=1')}
-        />
-      )}
-      {!isSupporter && !isCalmMode && activeHomeTab === 'overview' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
-      {!isSupporter && !isCalmMode && activeHomeTab === 'hub' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
-      {!isSupporter && !isCalmMode && activeHomeTab === 'shield' && <TaxShieldSection />}
+      {!isSupporter && activeHomeTab === 'hub' && <SupportCircle userId={user?.id} preferredLanguage={user?.preferred_language} />}
+      {!isSupporter && activeHomeTab === 'shield' && <TaxShieldSection />}
     </div>
   )
 }

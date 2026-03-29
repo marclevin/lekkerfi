@@ -5,13 +5,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import cast
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy import or_
 from werkzeug.utils import secure_filename
 
 from db.database import SessionLocal
 from db.models import (
+    AbsaSession,
     FinanceChatMessage,
     FinanceChatSession,
     Insight,
@@ -104,11 +105,27 @@ def _linked_user_ids_for_supporter(db, supporter_id: int) -> set[int]:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
+    raw = str(value).strip()
+
+    # First try ISO-style parsing, including trailing Z timezone markers.
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        pass
+
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:
-            return datetime.strptime(value[:19], fmt)
+            return datetime.strptime(raw[:19], fmt)
         except ValueError:
             continue
+
+    # Fallbacks for statement formats that are sometimes emitted by OCR/importers.
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw[:20], fmt)
+        except ValueError:
+            continue
+
     return None
 
 
@@ -311,9 +328,19 @@ def _alert_payload_with_db(alert: SupporterAlert, db=None) -> dict:
 def _risk_status(active_alerts: list[SupporterAlert], has_data: bool) -> str:
     if not has_data:
         return "no_data"
-    if any(a.severity == "critical" for a in active_alerts):
+
+    now = datetime.utcnow()
+    critical_is_fresh = any(
+        a.severity == "critical" and (now - a.created_at) <= timedelta(hours=24)
+        for a in active_alerts
+    )
+    if critical_is_fresh:
         return "at_risk"
+
+    critical_stale = any(a.severity == "critical" for a in active_alerts)
     if any(a.severity == "warning" for a in active_alerts):
+        return "watch"
+    if critical_stale:
         return "watch"
     return "stable"
 
@@ -679,6 +706,7 @@ def dashboard_users():
                 "id": user.id,
                 "full_name": user.full_name or user.email.split("@")[0],
                 "email": user.email,
+                "preferred_language": user.preferred_language or "english",
                 "current_balance": float(current_balance),
                 "avg_30d_spend": float(spend_30d),
                 "spending_7d": float(spend_7d),
@@ -823,6 +851,7 @@ def dashboard_user_details(user_id: int):
                 "id": user.id,
                 "full_name": user.full_name or user.email.split("@")[0],
                 "email": user.email,
+                "preferred_language": user.preferred_language or "english",
             },
             "transactions": transactions,
             "alerts": [_alert_payload_with_db(a, db) for a in active_alerts],
@@ -1416,6 +1445,8 @@ def inject_supporter_message(user_id: int):
     supporter_id = int(get_jwt_identity())
     data = request.get_json() or {}
     message_text = (data.get("message") or "").strip()
+    translated_text = (data.get("translated_message") or "").strip()
+    target_language = (data.get("target_language") or "english").strip().lower()
 
     if not message_text:
         return jsonify({"error": "message is required"}), 400
@@ -1441,14 +1472,15 @@ def inject_supporter_message(user_id: int):
         supporter_name = (
             (supporter.full_name or supporter.email.split("@")[0]) if supporter else "Your supporter"
         )
-        prefixed = f"[{supporter_name}]: {message_text}"
+        english_prefixed = f"[{supporter_name}]: {message_text}"
+        display_prefixed = f"[{supporter_name}]: {translated_text or message_text}"
 
         msg = FinanceChatMessage(
             session_id=latest_session.id,
             role="supporter",
-            language="english",
-            original_text=prefixed,
-            english_text=prefixed,
+            language=target_language,
+            original_text=display_prefixed,
+            english_text=english_prefixed,
         )
         db.add(msg)
 
@@ -1467,9 +1499,116 @@ def inject_supporter_message(user_id: int):
                 "id": msg.id,
                 "role": msg.role,
                 "text": msg.original_text,
+                "english_text": msg.english_text,
                 "created_at": msg.created_at.isoformat(),
             }
         }), 201
+    finally:
+        db.close()
+
+
+@supporters_bp.post("/dashboard/users/<int:user_id>/absa-session/start")
+@jwt_required()
+def start_supporter_user_absa_session(user_id: int):
+    """Supporter starts an ABSA connection flow on behalf of a linked user."""
+    supporter_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+        linked_user_ids = _linked_user_ids_for_supporter(db, supporter_id)
+        if user_id not in linked_user_ids:
+            return jsonify({"error": "Not linked to this user"}), 403
+
+        user = db.get(User, user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        if not (user.access_account or "").strip():
+            return jsonify({"error": "User has no ABSA account number configured"}), 400
+
+        client = current_app.config.get("ABSA_CLIENT")
+        token = client.get_oauth_token() if client else None
+
+        reference_number = f"SUP{uuid.uuid4().hex[:8].upper()}"
+        session_rec = AbsaSession(
+            user_id=user_id,
+            token=token,
+            transaction_id="",
+            surecheck_reference="",
+            reference_number=reference_number,
+            status="surecheck_pending",
+        )
+        db.add(session_rec)
+        db.commit()
+        db.refresh(session_rec)
+
+        return jsonify({
+            "session": {
+                "id": session_rec.id,
+                "status": session_rec.status,
+                "reference_number": session_rec.reference_number,
+                "created_at": session_rec.created_at.isoformat(),
+            },
+            "message": "ABSA connection flow started. User still needs to complete SureCheck approval.",
+        }), 201
+    finally:
+        db.close()
+
+
+@supporters_bp.get("/dashboard/users/<int:user_id>/absa-sessions")
+@jwt_required()
+def list_supporter_user_absa_sessions(user_id: int):
+    supporter_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+        linked_user_ids = _linked_user_ids_for_supporter(db, supporter_id)
+        if user_id not in linked_user_ids:
+            return jsonify({"error": "Not linked to this user"}), 403
+
+        sessions = (
+            db.query(AbsaSession)
+            .filter(AbsaSession.user_id == user_id)
+            .order_by(AbsaSession.created_at.desc())
+            .all()
+        )
+        return jsonify({
+            "sessions": [
+                {
+                    "id": s.id,
+                    "status": s.status,
+                    "reference_number": s.reference_number,
+                    "transaction_id": s.transaction_id,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+                }
+                for s in sessions
+            ]
+        })
+    finally:
+        db.close()
+
+
+@supporters_bp.delete("/dashboard/users/<int:user_id>/absa-sessions/<int:session_id>")
+@jwt_required()
+def delete_supporter_user_absa_session(user_id: int, session_id: int):
+    supporter_id = int(get_jwt_identity())
+    db = SessionLocal()
+    try:
+        if not _is_supporter(db, supporter_id):
+            return jsonify({"error": "Supporter access required"}), 403
+        linked_user_ids = _linked_user_ids_for_supporter(db, supporter_id)
+        if user_id not in linked_user_ids:
+            return jsonify({"error": "Not linked to this user"}), 403
+
+        session_rec = db.query(AbsaSession).filter_by(id=session_id, user_id=user_id).first()
+        if not session_rec:
+            return jsonify({"error": "Session not found"}), 404
+
+        db.delete(session_rec)
+        db.commit()
+        return jsonify({"message": "ABSA session removed"})
     finally:
         db.close()
 

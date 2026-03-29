@@ -91,7 +91,9 @@ export default function SupporterAlerts() {
     try {
       await markSupporterAlertRead(alert.id)
       await fetchAlerts()
-      if (alert.user_id) navigate(`/supporter/users?user=${alert.user_id}`)
+      if (alert.user_id) {
+        navigate(`/supporter/users/${alert.user_id}?concern=chat-controls&focus=${alert.id}`)
+      }
     } catch (err) {
       setError(err.message)
     }

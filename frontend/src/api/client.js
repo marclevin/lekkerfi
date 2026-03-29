@@ -128,10 +128,29 @@ export function getUserFinanceChat(userId) {
   return request(`/supporters/dashboard/users/${userId}/finance-chat`)
 }
 
-export function injectSupporterMessage(userId, message) {
+export function injectSupporterMessage(userId, message, options = {}) {
+  const payload = { message }
+  if (options.translatedMessage) payload.translated_message = options.translatedMessage
+  if (options.targetLanguage) payload.target_language = options.targetLanguage
   return request(`/supporters/dashboard/users/${userId}/finance-chat/inject`, {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(payload),
+  })
+}
+
+export function listSupporterUserAbsaSessions(userId) {
+  return request(`/supporters/dashboard/users/${userId}/absa-sessions`)
+}
+
+export function deleteSupporterUserAbsaSession(userId, sessionId) {
+  return request(`/supporters/dashboard/users/${userId}/absa-sessions/${sessionId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function startSupporterUserAbsaSession(userId) {
+  return request(`/supporters/dashboard/users/${userId}/absa-session/start`, {
+    method: 'POST',
   })
 }
 

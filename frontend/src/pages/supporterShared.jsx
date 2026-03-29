@@ -83,12 +83,46 @@ function daysSince(isoDate) {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / (1000 * 60 * 60 * 24))
 }
 
+function parseTransactionTime(value) {
+  if (!value) return Number.NaN
+  const parsed = new Date(value).getTime()
+  return Number.isNaN(parsed) ? Number.NaN : parsed
+}
+
 export function computeUserSignals(selectedDetails) {
   const mgmt = selectedDetails.management || {}
   const transactions = selectedDetails.transactions || []
 
-  const spending7d = Number(mgmt.spending_7d || 0)
-  const spending30d = Number(mgmt.spending_30d || 0)
+  let spending7d = Number(mgmt.spending_7d || 0)
+  let spending30d = Number(mgmt.spending_30d || 0)
+
+  // Some data sources expose incomplete management aggregates; derive from transactions as a fallback.
+  if (spending7d <= 0 && spending30d <= 0 && transactions.length > 0) {
+    const now = Date.now()
+    const negatives = transactions
+      .map((tx) => Number(tx?.amount || 0))
+      .filter((amount) => Number.isFinite(amount) && amount < 0)
+
+    const hasNegativeExpenses = negatives.length > 0
+
+    for (const tx of transactions) {
+      const txMs = parseTransactionTime(tx?.date)
+      if (Number.isNaN(txMs)) continue
+
+      const ageDays = (now - txMs) / (1000 * 60 * 60 * 24)
+      if (ageDays < 0 || ageDays > 30) continue
+
+      const amount = Number(tx?.amount || 0)
+      if (!Number.isFinite(amount) || amount === 0) continue
+
+      const expense = hasNegativeExpenses ? (amount < 0 ? Math.abs(amount) : 0) : Math.abs(amount)
+      if (!expense) continue
+
+      spending30d += expense
+      if (ageDays <= 7) spending7d += expense
+    }
+  }
+
   const avgDailyRaw = Number(mgmt.avg_daily_spend_30d || 0)
   const avgDaily = avgDailyRaw > 0 ? avgDailyRaw : (spending30d > 0 ? spending30d / 30 : 0)
   const expected7d = avgDaily * 7
@@ -296,9 +330,17 @@ export function computeAggregateSignals(users, alerts = []) {
     }
   }
 
-  const withAlerts = alerts.filter((a) => a.status !== 'dismissed').length > 0
-    ? users.filter((u) => u.active_alert_count > 0).length
-    : users.filter((u) => u.active_alert_count > 0).length
+  const unresolvedAlerts = Array.isArray(alerts)
+    ? alerts.filter((a) => !a.dismissed && a.status !== 'dismissed')
+    : []
+  const unresolvedUserIds = new Set(
+    unresolvedAlerts
+      .map((a) => Number(a.user_id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  )
+  const withAlerts = unresolvedUserIds.size > 0
+    ? unresolvedUserIds.size
+    : users.filter((u) => (u.active_alert_count || 0) > 0).length
   let duplicates
   if (withAlerts >= 2) {
     duplicates = {
