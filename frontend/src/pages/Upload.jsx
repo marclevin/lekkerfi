@@ -3,14 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { getStatementStatus, uploadStatement } from '../api/client'
 import { readStoredBoolean, subscribeCalmModeChanges, CALM_MODE_KEY } from '../utils/calmMode'
 
-const LANGUAGES = [
-  { value: 'xhosa',     label: 'isiXhosa' },
-  { value: 'zulu',      label: 'isiZulu' },
-  { value: 'afrikaans', label: 'Afrikaans' },
-  { value: 'sotho',     label: 'Sesotho' },
-  { value: 'english',   label: 'English' },
-]
-
 const ACCEPTED = '.pdf,.jpg,.jpeg,.png,.webp'
 const POLL_INTERVAL_MS = 3000
 const MAX_POLLS = 80  // ~4 minutes
@@ -66,7 +58,6 @@ export default function Upload() {
   const pollCountRef = useRef(0)
 
   const [file, setFile] = useState(null)
-  const [language, setLanguage] = useState('xhosa')
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
@@ -130,7 +121,7 @@ export default function Upload() {
     setError('')
     setUploading(true)
     try {
-      const data = await uploadStatement(file, language)
+      const data = await uploadStatement(file, 'english')
       setStatementId(data.statement_id)
       setFilename(file.name)
       setPhase('processing')
@@ -232,21 +223,6 @@ export default function Upload() {
               </>
             )}
           </button>
-
-          {!calmMode && (
-            <div className="form-group" style={{ maxWidth: 280 }}>
-              <label htmlFor="upload-lang">Insight language</label>
-              <select
-                id="upload-lang"
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
-            </div>
-          )}
 
           {error && <div className="alert alert-error" role="alert">{error}</div>}
 

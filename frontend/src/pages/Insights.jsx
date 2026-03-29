@@ -16,6 +16,11 @@ const LANGUAGES = [
   { value: 'english', label: 'English' },
 ]
 
+function normalizeLanguage(value) {
+  const candidate = String(value || '').toLowerCase()
+  return LANGUAGES.some((item) => item.value === candidate) ? candidate : 'english'
+}
+
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-ZA', {
     day: 'numeric',
@@ -143,7 +148,7 @@ function InsightDetail({ id, preferredLanguage }) {
   const navigate = useNavigate()
   const [insight, setInsight] = useState(null)
   const [error, setError] = useState('')
-  const [language, setLanguage] = useState(preferredLanguage || 'english')
+  const [language, setLanguage] = useState(normalizeLanguage(preferredLanguage))
   const [guided, setGuided] = useState(null)
   const [guidedLoading, setGuidedLoading] = useState(true)
   const [activeCard, setActiveCard] = useState(0)
@@ -180,7 +185,7 @@ function InsightDetail({ id, preferredLanguage }) {
   }, [id, language])
 
   useEffect(() => {
-    setLanguage(preferredLanguage || 'english')
+    setLanguage(normalizeLanguage(preferredLanguage))
   }, [preferredLanguage])
 
   useEffect(() => {
@@ -506,7 +511,7 @@ export default function Insights() {
       </div>
       <InsightDetail
         id={latest.id}
-        preferredLanguage={user?.preferred_language || 'english'}
+        preferredLanguage={normalizeLanguage(user?.preferred_language)}
       />
     </div>
   )

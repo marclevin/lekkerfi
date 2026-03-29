@@ -16,7 +16,6 @@ import {
   maskAccountReference,
   normalizeAccountKey,
   readAccountTags,
-  writeAccountTags,
 } from '../utils/accountTags'
 
 const STEPS = ['Your details', 'Connect bank', 'Approve', 'Choose account', 'Summary']
@@ -28,6 +27,11 @@ const LANGUAGES = [
   { value: 'sotho',     label: 'Sesotho' },
   { value: 'english',   label: 'English' },
 ]
+
+function normalizeLanguage(value) {
+  const candidate = String(value || '').toLowerCase()
+  return LANGUAGES.some((l) => l.value === candidate) ? candidate : 'english'
+}
 
 function StepIndicator({ current }) {
   return (
@@ -364,9 +368,10 @@ function fmtBalance(raw) {
 }
 
 function StepAccounts({ onDone }) {
+  const { user } = useAuth()
   const [accounts, setAccounts] = useState(null)
   const [selected, setSelected] = useState([])
-  const [language, setLanguage] = useState('xhosa')
+  const [language] = useState(() => normalizeLanguage(user?.preferred_language))
   const [accountTags, setAccountTags] = useState(() => readAccountTags())
   const [loadingAccounts, setLoadingAccounts] = useState(false)
   const [loadingGenerate, setLoadingGenerate] = useState(false)
@@ -403,7 +408,6 @@ function StepAccounts({ onDone }) {
       const ensured = ensureAccountTags(merged, accountKeys)
       if (ensured.changed || changed) {
         setAccountTags(ensured.tags)
-        writeAccountTags(ensured.tags)
       } else {
         setAccountTags(merged)
       }
@@ -420,19 +424,6 @@ function StepAccounts({ onDone }) {
     )
   }
 
-  function handleTagChange(accountNumber, value, index) {
-    const key = normalizeAccountKey(accountNumber)
-    if (!key) return
-
-    const cleanValue = value.slice(0, 32)
-    const nextTags = {
-      ...accountTags,
-      [key]: cleanValue || friendlyAccountName(accountNumber, accountTags, index),
-    }
-    setAccountTags(nextTags)
-    writeAccountTags(nextTags)
-  }
-
   async function handleGenerate() {
     if (selected.length === 0) {
       setError('Select at least one account.')
@@ -442,7 +433,11 @@ function StepAccounts({ onDone }) {
     setLoadingGenerate(true)
     try {
       const data = await generateInsight(selected, language)
-      onDone(data)
+      onDone({
+        selectedAccounts: selected,
+        connectedAt: new Date().toISOString(),
+        insightId: data?.insight_id ?? null,
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -454,13 +449,13 @@ function StepAccounts({ onDone }) {
     <div className="step-content" aria-live="polite">
       <h2>Pick your money source</h2>
       <p className="step-desc">
-        Give each account a simple name you will remember, then choose which one to summarize.
+        Choose which account to connect. We use the bank-provided account names automatically.
       </p>
 
       <div className="callout callout-info">
         <span className="callout-icon">📊</span>
         <div className="callout-body">
-          <strong>What you'll get:</strong> A financial summary of your last 90 days of transactions — including spending categories, income, and trends — translated into your chosen language.
+          <strong>What happens next:</strong> We will securely connect the selected account(s) and save recent transaction history so your dashboard can use it.
         </div>
       </div>
 
@@ -479,28 +474,34 @@ function StepAccounts({ onDone }) {
               {accounts.map((acc, index) => {
                 const num  = acc.accountNumber  || acc.account_number
                 const key = normalizeAccountKey(num)
-                const inputId = key ? `account-tag-${key}` : `account-tag-${index}`
                 const tagName = friendlyAccountName(num, accountTags, index)
                 const balance = acc.currentBalance || acc.current_balance || '—'
                 const type = acc.accountType    || acc.account_type || ''
                 return (
-                  <div key={num || `account-${index}`} className={`account-item ${selected.includes(num) ? 'selected' : ''}`}>
+                  <div
+                    key={num || `account-${index}`}
+                    className={`account-item ${selected.includes(num) ? 'selected' : ''}`}
+                    role="checkbox"
+                    aria-checked={selected.includes(num)}
+                    tabIndex={0}
+                    onClick={() => toggleAccount(num)}
+                    onKeyDown={(e) => {
+                      if (e.key === ' ' || e.key === 'Enter') {
+                        e.preventDefault()
+                        toggleAccount(num)
+                      }
+                    }}
+                  >
                     <input
                       type="checkbox"
                       checked={selected.includes(num)}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={() => toggleAccount(num)}
                       aria-label={`Use ${tagName} for summary`}
                     />
                     <div className="account-details">
-                      <label className="account-tag-label" htmlFor={inputId}>Account name</label>
-                      <input
-                        id={inputId}
-                        className="input account-tag-input"
-                        value={tagName}
-                        onChange={(e) => handleTagChange(num, e.target.value, index)}
-                        onClick={(e) => e.stopPropagation()}
-                        placeholder={type || friendlyAccountName(num, {}, index)}
-                      />
+                      <span className="account-tag-label">Account name</span>
+                      <span className="account-name">{tagName}</span>
                       <span className="account-num">{maskAccountReference(num)}</span>
                       {type && <span className="account-type">{type}</span>}
                     </div>
@@ -511,23 +512,14 @@ function StepAccounts({ onDone }) {
             </div>
           )}
 
-          <div className="form-group generate-options">
-            <label htmlFor="language">Insight language</label>
-            <select id="language" value={language} onChange={(e) => setLanguage(e.target.value)}>
-              {LANGUAGES.map((l) => (
-                <option key={l.value} value={l.value}>{l.label}</option>
-              ))}
-            </select>
-          </div>
-
           <button
             className="btn btn-primary"
             onClick={handleGenerate}
             disabled={loadingGenerate || selected.length === 0}
           >
             {loadingGenerate
-              ? 'Generating insights… (this may take a moment)'
-              : `Generate Insights for ${selected.length} account${selected.length !== 1 ? 's' : ''}`}
+              ? 'Connecting selected accounts…'
+              : 'Connect selected'}
           </button>
         </>
       )}
@@ -537,45 +529,22 @@ function StepAccounts({ onDone }) {
 
 // ── Step 4: Insight Result ────────────────────────────────────────────────────
 
-function StepInsight({ insight }) {
+function StepInsight({ selectedAccounts }) {
   const navigate = useNavigate()
   const accountTags = readAccountTags()
 
   return (
     <div className="step-content" aria-live="polite">
-      <h2>Your Financial Insights</h2>
+      <h2>Accounts connected</h2>
       <p className="step-desc">
-        Based on your last 90 days of transactions across{' '}
-        <strong>{friendlyAccountList(insight.accounts, accountTags, ', ')}</strong>.
+        Your selected money source is now connected:{' '}
+        <strong>{friendlyAccountList(selectedAccounts, accountTags, ', ')}</strong>.
       </p>
 
       <div className="callout callout-success">
         <span className="callout-icon">✅</span>
         <div className="callout-body">
-          Insights generated successfully! Head to your <strong>Home</strong> dashboard to see the full charts and visualisations.
-        </div>
-      </div>
-
-      <div className="insight-section">
-        <h3>Summary</h3>
-        <div className="insight-bullets">
-          {insight.simplified?.split('\n').filter(Boolean).map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
-        </div>
-      </div>
-
-      <div className="insight-section">
-        <h3>
-          Translated{' '}
-          <span className="lang-badge">
-            {LANGUAGES.find((l) => l.value === insight.language)?.label || insight.language}
-          </span>
-        </h3>
-        <div className="insight-bullets translated">
-          {insight.translated?.split('\n').filter(Boolean).map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
+          Connection complete. Recent transaction history has been saved and is ready for your dashboard features.
         </div>
       </div>
 
@@ -597,7 +566,7 @@ export default function Flow() {
   const [step, setStep] = useState(0)
   const [accountDetails, setAccountDetails] = useState(null)
   const [sessionData, setSessionData] = useState(null)
-  const [insight, setInsight] = useState(null)
+  const [connectedAccounts, setConnectedAccounts] = useState([])
   const [flowMessage, setFlowMessage] = useState('')
   const [calmMode, setCalmMode] = useState(() => readStoredBoolean(CALM_MODE_KEY, false))
 
@@ -650,8 +619,8 @@ export default function Flow() {
           />
         )}
         {step === 2 && <StepSurecheck sessionData={sessionData} onDone={() => setStep(3)} />}
-        {step === 3 && <StepAccounts onDone={(data) => { setInsight(data); setStep(4) }} />}
-        {step === 4 && insight && <StepInsight insight={insight} />}
+        {step === 3 && <StepAccounts onDone={(data) => { setConnectedAccounts(data.selectedAccounts || []); setStep(4) }} />}
+        {step === 4 && <StepInsight selectedAccounts={connectedAccounts} />}
       </div>
     </div>
   )

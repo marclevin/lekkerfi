@@ -21,6 +21,11 @@ const LANGUAGES = [
   { value: 'english',   label: 'English' },
 ]
 
+function normalizeLanguage(value) {
+  const candidate = String(value || '').toLowerCase()
+  return LANGUAGES.some((item) => item.value === candidate) ? candidate : 'english'
+}
+
 function formatTime(iso) {
   return new Date(iso).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
 }
@@ -132,17 +137,15 @@ export default function Chat() {
   const [language, setLanguage] = useState(() => {
     try {
       const saved = localStorage.getItem('lekkerfi_chat_lang')
-      if (saved) return saved
+      if (saved) return normalizeLanguage(saved)
     } catch {}
     return 'english'
   })
 
-  // Apply profile preferred_language once user loads, if no explicit chat choice is saved
+  // Default chat language to the user's profile language whenever profile data is available.
   useEffect(() => {
     if (!user?.preferred_language) return
-    try {
-      if (!localStorage.getItem('lekkerfi_chat_lang')) setLanguage(user.preferred_language)
-    } catch {}
+    setLanguage(normalizeLanguage(user.preferred_language))
   }, [user?.preferred_language])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -563,8 +566,9 @@ export default function Chat() {
             className="chat-ctrl-select"
             value={language}
             onChange={(e) => {
-              setLanguage(e.target.value)
-              try { localStorage.setItem('lekkerfi_chat_lang', e.target.value) } catch {}
+              const next = normalizeLanguage(e.target.value)
+              setLanguage(next)
+              try { localStorage.setItem('lekkerfi_chat_lang', next) } catch {}
             }}
             aria-label="Choose chat language"
           >
