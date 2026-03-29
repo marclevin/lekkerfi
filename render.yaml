@@ -21,8 +21,9 @@ services:
       - key: FLASK_SECRET_KEY
         generateValue: true
 
-  - type: static
+  - type: web
     name: lekkerfi-web
+    runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
